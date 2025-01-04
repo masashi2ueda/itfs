@@ -1,0 +1,12 @@
+pandas
+numpy
+matplotlib
+japanize_matplotlib
+scipy
+scikit-learn
+tqdm
+polars
+lightgbm
+pyarrow
+pgss
+seaborn
