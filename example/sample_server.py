@@ -1,41 +1,40 @@
-import streamlit as st
-import matplotlib.pyplot as plt
-from pgss import PageSessionState
-import pandas as pd
+# %%
+import random
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
 import lightgbm as lgb
-import pickle as pkl
-import os
 
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.datasets import fetch_california_housing
 from sklearn.model_selection import train_test_split
 
 from itfs import start_server
 
+seed = 42
+np.random.seed(seed)
+random.seed(seed)
 # %%
 ############################################
-# データセットの作成
+# Create dataset
 ############################################
 def create_df_housing()->pd.DataFrame:
     dataset = fetch_california_housing()
     X = pd.DataFrame(dataset.data, columns=dataset.feature_names)
     y = pd.Series(dataset.target, name='target')
     df = pd.concat([y,X], axis=1)
-    # 一部の数値特徴をカテゴリ特徴に変換
+    # Convert some numerical features to categorical features
     cat_cols = ["MedInc", "HouseAge", "AveRooms", "AveBedrms"]
     for col in cat_cols:
         bin_size = min(30, df[col].nunique())
         df[col] = pd.cut(df[col], bins=bin_size, labels=[f"{col}_{i}" for i in range(bin_size)])
 
-    # ノイズを入れた特徴を追加する
-    num_nz_cols = ["Population","AveOccup", "Latitude", "Longitude"]
+    # Add features with noise
+    num_nz_cols = ["AveOccup", "Latitude"]
     for col in num_nz_cols:
         for nz_ratio in [2, 0.01]:
             df[f"{col}_nz_{nz_ratio}"] = df[col] + np.random.normal(0, np.std(df[col].values)*nz_ratio, len(df))
-    cat_nz_cols = ["Population","AveOccup"]
+    cat_nz_cols = ["AveOccup"]
     for col in cat_nz_cols:
         for nz_ratio in [0.8, 0.01]:
             nzcol = f"{col}_nz_{nz_ratio}"
@@ -45,16 +44,16 @@ def create_df_housing()->pd.DataFrame:
             nz_vals = np.random.choice(df[col].unique(), nz_size)
             vals[nx_idxs] = nz_vals
             df[nzcol] = vals
-    # 固定の値を追加
+    # Add fixed values
     df["fixed1"] = 1
     df["fixed2"] = "a"
-    # ランダムな列を追加
+    # Add random columns
     df["random1"] = np.random.rand(len(df))
-    # 相関がほぼ一緒の列を追加
-    df["Population_copy"] = df["Population"].copy() 
-    # 無視するが利用するものを追加
+    # Add columns with nearly identical correlation
+    df["Population_copy"] = df["Population"].values.copy() 
+    # Add columns to ignore but still use
     df["ignore1"] = np.random.rand(len(df))
-    # 強制的に捨てる列を追加
+    # Add columns to force drop
     df["drop1"] = np.random.rand(len(df))
     return df
 
@@ -72,17 +71,17 @@ def create_df_dummy()->pd.DataFrame:
         df[c] = (df[c] - np.mean(df[c].values) )/ np.std(df[c].values) 
     df["target"] = np.mean(df.values, axis=1) + np.random.normal(0, 0.01, len(df))
 
-    # 一部の数値特徴をカテゴリ特徴に変換
+    # Convert some numerical features to categorical features
     cat_cols = ["x1", "x2"]
     for col in cat_cols:
         bin_size = min(30, df[col].nunique())
         df[col] = pd.cut(df[col], bins=bin_size, labels=[f"{col}_{i}" for i in range(bin_size)])
 
-    # 相関が一緒orほぼ一緒の列を追加
+    # Add columns with identical or nearly identical correlation
     df["x4_copy"] = df["x4"].values.copy() 
     df["x5_near"] = df["x5"].values.copy() + np.random.normal(0, 0.001, len(df))
 
-    # ノイズを入れた特徴を追加する
+    # Add features with noise
     col = "x6"
     nz_ratio = 100
     df[f"{col}_nz_{nz_ratio}"] = df[col] + np.random.normal(0, np.std(df[col].values)*nz_ratio, len(df))
@@ -97,40 +96,41 @@ def create_df_dummy()->pd.DataFrame:
     vals[nx_idxs] = nz_vals
     df[nzcol] = vals
 
-    # 固定の値を追加
+    # Add fixed values
     df["fixed1"] = 1
     df["fixed2"] = "a"
-    # ランダムな列を追加
+    # Add random columns
     df["random1"] = np.random.rand(len(df))
-    # df["random2"] = np.random.choice(["a","b","c"], len(df))
-    # df["random2"] = df["random2"].astype("category")
-    # 無視するが利用するものを追加
+    # Add columns to ignore but still use
     df["ignore1"] = np.random.rand(len(df))
-    # 強制的に捨てる列を追加
+    # Add columns to force drop
     df["drop1"] = np.random.rand(len(df))
     return df
-
-@st.cache_data
-def get_src_df():
-    # src_df = create_df_housing()
-    src_df = create_df_dummy()
-    kf = KFold(n_splits=5, shuffle=True, random_state=0)
-    kf_idxs = [(train_idx, test_idx) for train_idx, test_idx in kf.split(src_df)]
-    return src_df, kf_idxs
-
 # %%
-src_df, kf_idxs = get_src_df()
+############################################
+# Load dataset
+############################################
+# Choose one and comment out the other
 
+# Dummy data
+src_df = create_df_dummy()
+
+# # Housing price data
+# src_df = create_df_housing()
 
 
 # %%
 ####################
-# errorと重要度を計算する関数を用意
+# Prepare functions to calculate error and importance
 ####################
-def calc_error_importance(xdf: pd.DataFrame, ys: np.ndarray)-> tuple[list[float], pd.DataFrame]:
+kf = KFold(n_splits=5, shuffle=True, random_state=0)
+kf_idxs = [(train_idx, test_idx) for train_idx, test_idx in kf.split(src_df)]
+def calc_error_importance(xdf: pd.DataFrame, ys: np.ndarray)-> tuple[np.ndarray[float], pd.DataFrame]:
     global kf_idxs
-    errors = []
+    oof_preds = []
+    oof_trues = []
     importance_df = []
+    cv_errors = []
     for fi, (train_valid_idxs, test_idxs) in enumerate(kf_idxs):
         train_idxs, valid_idxs = train_test_split(train_valid_idxs, test_size=0.2, random_state=0)
         train_x = xdf.iloc[train_idxs]
@@ -139,44 +139,120 @@ def calc_error_importance(xdf: pd.DataFrame, ys: np.ndarray)-> tuple[list[float]
         valid_y = ys[valid_idxs]
         test_x = xdf.iloc[test_idxs]
         test_y = ys[test_idxs]
-        # ハイパーパラメータの設定
+        # Set hyperparameters
         params = {
             'objective': 'regression',
             'metric': 'rmse',
             'boosting_type': 'gbdt',
             'learning_rate': 0.1,
-            'num_leaves': 80,
+            'num_leaves': 35,
+            'random_state': seed,
             'verbose': -1
         }
 
-        # モデルの学習
+        # Train the model
         verbose_eval=0
         model = lgb.train(
             params,
             train_set=lgb.Dataset(train_x, train_y),
             valid_sets=lgb.Dataset(valid_x, valid_y),
             num_boost_round=1000,
-            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True), # early_stopping用コールバック関数
-                                lgb.log_evaluation(verbose_eval)], # コマンドライン出力用コールバック関数
+            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True), # Callback for early stopping
+                                lgb.log_evaluation(verbose_eval)], # Callback for command-line output
         )
 
-        # テストデータでの予測
+        # Predict on test data
         y_pred = model.predict(test_x, num_iteration=model.best_iteration)
+        # Evaluate accuracy (RMSE)
+        cv_error = root_mean_squared_error(y_true=test_y,y_pred=y_pred)
+        cv_errors.append(cv_error)
+        # Add to out-of-fold predictions
+        oof_preds.extend(y_pred.tolist())
+        oof_trues.extend(test_y.tolist())
 
-        # 精度の評価 (RMSE)
-        error = np.sqrt(mean_squared_error(test_y, y_pred))
-        errors.append(float(error))
-
-        # 特徴量重要度
+        # Feature importance
         importance = model.feature_importance(importance_type="gain")
         feature_names = train_x.columns
         temp_imp_df = pd.DataFrame({f"importance{fi}": importance})
         temp_imp_df.index = feature_names
         importance_df.append(temp_imp_df)
     importance_df = pd.concat(importance_df, axis=1)
-    return errors, importance_df
-def calc_error(xdf: pd.DataFrame, ys: np.ndarray) -> list[float]:
-    return calc_error_importance(xdf=xdf, ys=ys)[0]
-
-fs = start_server(src_df=src_df, ifs_path="ifs.pkl", ycol="target", calc_error_importance=calc_error_importance, calc_error=calc_error)
+    oof_error = root_mean_squared_error(y_true=oof_trues, y_pred=oof_preds)
+    cv_errors = np.array(cv_errors)
+    dst_dict = {
+        "oof_error": oof_error,
+        "cv_errors": cv_errors,
+        "importance_df": importance_df
+    }
+    return dst_dict
+# %%
+def print_cols(label, drop_cols):
+    print(f"・{label}", len(drop_cols))
+    for ci, col in enumerate(drop_cols):
+        print(f"{ci+1}: {col}")
+    cols = fs.drop_selected_cols(df=src_df, is_all_true=True).columns
+    print("・Remaining columns:", len(cols))
+    for col in cols:
+        print(col)
+# %%
+####################
+# Generate an instance of feature selection
+####################
+fs = start_server(
+    src_df=src_df,
+    fs_path="./fs.pkl",
+    ycol="target",
+    calc_error_importance=calc_error_importance
+)
 fs
+# %%
+# import streamlit as st
+# import time
+# progress_text = "Operation in progress. Please wait."
+# my_bar = st.progress(0, text=progress_text)
+# st.write("Start")
+# percent_complete = 0.0
+# total_cnt = 3
+# t1 = time.time()
+# each_time_sec = 0
+# for _ in range(total_cnt):
+#     percent_complete += 1/total_cnt
+#     time.sleep(1)
+#     if percent_complete <= 1:
+#         my_bar.progress(percent_complete, text=progress_text)
+#     # st.write(f"percent_complete: {percent_complete}")
+#     percent_complete
+#     st.text(f"each_time_sec: {each_time_sec}")
+# %%
+
+
+
+# # my_bar.empty()
+import streamlit as st
+import time
+
+# タイトル
+st.title("Streamlit Progress Bar Example")
+
+
+
+# プログレスバーを100%になるまで更新
+if st.button("Start"):
+    # プログレスバーの初期化
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    time_per_one = []
+    vals = np.arange(5)
+    for vi, val in enumerate(vals):
+        time_start = time.time()
+        percent_complete = vi/len(vals)
+        st.write(percent_complete)
+        progress_bar.progress(percent_complete)
+        time.sleep(1)  # 進行速度を調整
+        time_per_one.append(time.time() - time_start)
+        status_text.text(f"Progress: {percent_complete}%, Elapsed time: {np.mean(time_per_one):.2f} sec")
+    progress_bar.empty()
+
+    st.write("処理が完了しました！")
+if st.button("Reset"):
+    st.write("test")
