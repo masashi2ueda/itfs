@@ -112,11 +112,11 @@ def create_df_dummy()->pd.DataFrame:
 ############################################
 # Choose one and comment out the other
 
-# Dummy data
-src_df = create_df_dummy()
+# # Dummy data
+# src_df = create_df_dummy()
 
-# # Housing price data
-# src_df = create_df_housing()
+# Housing price data
+src_df = create_df_housing()
 
 
 # %%
@@ -205,6 +205,7 @@ fs = start_server(
     calc_error_importance=calc_error_importance
 )
 fs
+
 # %%
 # import streamlit as st
 # import time
@@ -224,35 +225,51 @@ fs
 #     percent_complete
 #     st.text(f"each_time_sec: {each_time_sec}")
 # %%
-
-
-
-# # my_bar.empty()
 import streamlit as st
-import time
+if "val" not in st.session_state:
+    st.session_state.val = 0
+    st.session_state.val2 = 0
 
-# タイトル
-st.title("Streamlit Progress Bar Example")
+st.write("b1:", st.session_state.val)
+isbt = st.button("b1")
+st.write(isbt)
+if isbt:
+    st.session_state.val += 1
+    st.write("b2:", st.session_state.val)
+else:
+    st.write("b3:", st.session_state.val)
+st.write("b4:", st.session_state.val)
+
+st.session_state.val2 += 1
+st.write("b5:", st.session_state.val2)
+
+# %%
+# # # my_bar.empty()
+# import streamlit as st
+# import time
+
+# # タイトル
+# st.title("Streamlit Progress Bar Example")
 
 
 
-# プログレスバーを100%になるまで更新
-if st.button("Start"):
-    # プログレスバーの初期化
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    time_per_one = []
-    vals = np.arange(5)
-    for vi, val in enumerate(vals):
-        time_start = time.time()
-        percent_complete = vi/len(vals)
-        st.write(percent_complete)
-        progress_bar.progress(percent_complete)
-        time.sleep(1)  # 進行速度を調整
-        time_per_one.append(time.time() - time_start)
-        status_text.text(f"Progress: {percent_complete}%, Elapsed time: {np.mean(time_per_one):.2f} sec")
-    progress_bar.empty()
+# # プログレスバーを100%になるまで更新
+# if st.button("Start"):
+#     # プログレスバーの初期化
+#     progress_bar = st.progress(0)
+#     status_text = st.empty()
+#     time_per_one = []
+#     vals = np.arange(5)
+#     for vi, val in enumerate(vals):
+#         time_start = time.time()
+#         percent_complete = vi/len(vals)
+#         st.write(percent_complete)
+#         progress_bar.progress(percent_complete)
+#         time.sleep(1)  # 進行速度を調整
+#         time_per_one.append(time.time() - time_start)
+#         status_text.text(f"Progress: {percent_complete}%, Elapsed time: {np.mean(time_per_one):.2f} sec")
+#     progress_bar.empty()
 
-    st.write("処理が完了しました！")
-if st.button("Reset"):
-    st.write("test")
+#     st.write("処理が完了しました！")
+# if st.button("Reset"):
+#     st.write("test")

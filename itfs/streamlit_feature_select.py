@@ -105,7 +105,7 @@ def start_server(
     def load_ifs():
         return pkl.load(open(fs_path, "rb"))
     
-    def progress_bar(vals: np.ndarray[float], func: Callable[float, None]):
+    def progress_bar(vals: np.ndarray[float], func: Callable[[float], None]):
         # プログレスバーを100%になるまで更新
         # プログレスバーの初期化
         progress_bar = st.progress(0)
@@ -116,9 +116,10 @@ def start_server(
             func(val)
             percent_complete = vi/len(vals)
             progress_bar.progress(percent_complete)
-            time_per_one.append(time.time() - time_start)
-            status_text.text(f"Progress: {percent_complete}%, Elapsed time: {np.mean(time_per_one):.2f} sec")
-            save_ifs()
+            ptime = time.time() - time_start
+            if ptime > 0.1:
+                time_per_one.append(ptime)
+            status_text.text(f"Progress: {percent_complete*100:.2f}%, Elapsed time: {np.mean(time_per_one):.2f} sec")
         progress_bar.empty()
 
     # initialize
@@ -168,23 +169,117 @@ def start_server(
     else:
         show_heat_map()
 
-
-
-    th_ranges = float_text_range_input("corr thresould range", 0.5, 1.0, 10)
+    # calculate error with corr each thresould
+    th_ranges = float_text_range_input(
+        "corr thresould range", 0.5, 1-1e-8, 10)
     if st.button("calculate error with corr each thresould"):
-        progress_bar(th_ranges, partial(fs.fit_corr_cols, df=src_df, verbose=False))
+        def fit_corr_cols(th: float):
+            fs.fit_corr_cols(df=src_df, cor_th=th, verbose=False)
+            save_ifs()
+        progress_bar(th_ranges, fit_corr_cols)
+    if fs.cor_error_list is not None:
+        # Plot correlation trends
+        fig, error_df = fs.plot_cor_state()
+        st.pyplot(fig)
 
-    # cor_accep_pth_from_min_error = float_text_input("cor最小エラーからの許容値", fs.cor_accept_pth_from_min_error)
-    # if st.button("相関の削除"):
-    #     # 落とす列を決める
-    #     cor_error_df, figs = fs.plot_select_cors(accept_pth_from_min_error=cor_accep_pth_from_min_error)
-    #     st.write("・fs.drop_cor_cols:")
-    #     st.write(", ".join(fs.drop_cor_cols))
-    #     write_remainer_cols(fs, src_df)
-    #     for fig in figs:
-    #         st.pyplot(fig)
-    #     save_ifs()
+    # Determine columns to drop
+    def drop_corr_cols(th: float):
+        cor_error_df, fig = fs.plot_select_cors(
+            accept_pth_from_min_error=th)
+        st.pyplot(fig)
+        write_remainer_cols(fs, src_df, fs.drop_cor_cols)
+        save_ifs()
+    cor_accept_pth_from_min_error = float_text_input("cor_accept_pth_from_min_error", fs.cor_accept_pth_from_min_error)
+    if st.button("drop correration columns"):
+        drop_corr_cols(cor_accept_pth_from_min_error)
+    elif fs.cor_accept_pth_from_min_error is not None:
+        drop_corr_cols(fs.cor_accept_pth_from_min_error)
 
+    ############################
+    # null importance columns
+    ############################
+    st.write("---")
+    st.header("null importance")
+    null_calc_times = float_text_input("null_calc_times", 3)
+    if st.button("create null importance"):
+        fs.create_null_df(df=src_df, null_times=int(null_calc_times))
+        save_ifs()
+    if fs.null_importance_p_df is not None:
+        fig = plt.figure(figsize=(5, 2))
+        plt.bar(fs.null_importance_p_df["cols"], fs.null_importance_p_df["p_value"])
+        plt.xticks(rotation=90)
+        st.pyplot(fig)
+
+    # calculate error with corr each thresould
+    th_ranges = float_text_range_input(
+        "null thresould range", 0.0, 0.5, 10)
+    if st.button("calculate error with null importance each thresould"):
+        def fit_null_cols(th: float):
+            fs.fit_null_cols(df=src_df, null_p_th=th, verbose=False)
+            save_ifs()
+        progress_bar(th_ranges, fit_null_cols)
+    if fs.null_error_list is not None:
+        # Plot null trends
+        fig, error_df = fs.plot_null_state()
+        st.pyplot(fig)
+
+    # Determine columns to drop
+    def drop_null_cols(th: float):
+        null_error_df, fig = fs.plot_select_nulls(
+            accept_pth_from_min_error=th)
+        st.pyplot(fig)
+        write_remainer_cols(fs, src_df, fs.drop_null_cols)
+        save_ifs()
+    null_accept_pth_from_min_error = float_text_input("null_accept_pth_from_min_error", fs.null_accept_pth_from_min_error)
+    if st.button("drop null columns"):
+        drop_null_cols(null_accept_pth_from_min_error)
+    elif fs.null_accept_pth_from_min_error is not None:
+        drop_null_cols(fs.null_accept_pth_from_min_error)
+
+    ############################
+    # feature importance columns
+    ############################
+    st.write("---")
+    st.header("feature importance")
+    if st.button("create feature importance"):
+        # Calculate feature importance
+        fs.create_feature_importance_df(df=src_df)
+        save_ifs()
+    if fs.feature_importance_p_df is not None:
+        fig = plt.figure(figsize=(5, 2))
+        plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
+        plt.xticks(rotation=90)
+        st.pyplot(fig)
+
+    # calculate error with corr each thresould
+    th_ranges = float_text_range_input(
+        "importance thresould range", 0.0, 0.5, 10)
+    if st.button("calculate error with feature importance each thresould"):
+        def fit_importance_cols(th: float):
+            fs.fit_feature_importance_cols(df=src_df, importance_p_th=th, verbose=False)
+            save_ifs()
+        progress_bar(th_ranges, fit_importance_cols)
+    if fs.fearute_importance_error_list is not None:
+        # Plot null trends
+        fig, error_df = fs.plot_feature_importance_state()
+        st.pyplot(fig)
+
+    # Determine columns to drop
+    def drop_fs_cols(th: float):
+        null_error_df, fig = fs.plot_select_feature_importance(
+            accept_pth_from_min_error=th)
+        st.pyplot(fig)
+        write_remainer_cols(fs, src_df, fs.drop_feature_importance_cols)
+        save_ifs()
+    fearute_importance_accept_pth_from_min_error = float_text_input("fearute_importance_accept_pth_from_min_error", fs.fearute_importance_accept_pth_from_min_error)
+    if st.button("drop importance columns"):
+        drop_fs_cols(fearute_importance_accept_pth_from_min_error)
+    elif fs.fearute_importance_accept_pth_from_min_error is not None:
+        drop_fs_cols(fs.fearute_importance_accept_pth_from_min_error)
+
+
+
+ 
     # st.header("nullノイズの高い列を削除")
     # ranges = float_text_range_input("null", 0.0, 0.3, 10)
     # if st.button("nullノイズの計算"):

@@ -10,3 +10,4 @@ lightgbm
 pyarrow
 pgss
 seaborn
+streamlit
