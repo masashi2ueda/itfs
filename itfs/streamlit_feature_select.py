@@ -12,6 +12,8 @@ import seaborn as sns
 import time
 from functools import partial
 from typing import Callable
+import json
+import yaml
 
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold
@@ -95,19 +97,25 @@ def start_server(
         ignore_cols (list[str], optional): columns to ignore. Defaults to [].
         min_col_size (int, optional): minimum column size. Defaults to 2.
     """
+    print("------")
     # create session state instance
     ps = PageSessionState(__file__)
     ps.set_if_not_exist({"init": False})
 
     # local functions
     def save_ifs():
+        print("fs.drop_cor_cols, save:", fs.drop_cor_cols)
         pkl.dump(fs, open(fs_path, "wb"))
+
+        dst_dict = fs.create_dst_dict()
+        with open(fs_path.replace(".pkl", ".yaml"), "w") as f:
+            yaml.dump(dst_dict, f)
+
+
     def load_ifs():
         return pkl.load(open(fs_path, "rb"))
     
     def progress_bar(vals: np.ndarray[float], func: Callable[[float], None]):
-        # プログレスバーを100%になるまで更新
-        # プログレスバーの初期化
         progress_bar = st.progress(0)
         status_text = st.empty()
         time_per_one = []
@@ -119,7 +127,8 @@ def start_server(
             ptime = time.time() - time_start
             if ptime > 0.1:
                 time_per_one.append(ptime)
-            status_text.text(f"Progress: {percent_complete*100:.2f}%, Elapsed time: {np.mean(time_per_one):.2f} sec")
+            mean_time = 0 if len(time_per_one) == 0 else np.mean(time_per_one)
+            status_text.text(f"Progress: {percent_complete*100:.2f}%, Elapsed time: {mean_time:.2f} sec")
         progress_bar.empty()
 
     # initialize
@@ -136,7 +145,7 @@ def start_server(
             st.write("calculating error without constant columns...")
             fs.fit_const_cols(df=src_df)
             st.write("done.")
-            
+            print("save1")
             save_ifs()
         ps.init = True
     fs = load_ifs()
@@ -148,6 +157,7 @@ def start_server(
     st.header("constant")
     if fs.const_cols is not None:
         write_remainer_cols(fs, src_df, fs.const_cols)
+        print("save2")
         save_ifs()
 
     ############################
@@ -188,6 +198,7 @@ def start_server(
             accept_pth_from_min_error=th)
         st.pyplot(fig)
         write_remainer_cols(fs, src_df, fs.drop_cor_cols)
+        print("save3", th)
         save_ifs()
     cor_accept_pth_from_min_error = float_text_input("cor_accept_pth_from_min_error", fs.cor_accept_pth_from_min_error)
     if st.button("drop correration columns"):
@@ -215,102 +226,72 @@ def start_server(
         "null thresould range", 0.0, 0.5, 10)
     if st.button("calculate error with null importance each thresould"):
         def fit_null_cols(th: float):
+            print("fs.drop_cor_cols1:", fs.drop_cor_cols)
             fs.fit_null_cols(df=src_df, null_p_th=th, verbose=False)
+            print("fs.drop_cor_cols2:", fs.drop_cor_cols)
+            print("save4")
             save_ifs()
+            print("fs.drop_cor_cols3:", fs.drop_cor_cols)
+
         progress_bar(th_ranges, fit_null_cols)
-    if fs.null_error_list is not None:
-        # Plot null trends
-        fig, error_df = fs.plot_null_state()
-        st.pyplot(fig)
+    # if fs.null_error_list is not None:
+    #     # Plot null trends
+    #     fig, error_df = fs.plot_null_state()
+    #     st.pyplot(fig)
 
-    # Determine columns to drop
-    def drop_null_cols(th: float):
-        null_error_df, fig = fs.plot_select_nulls(
-            accept_pth_from_min_error=th)
-        st.pyplot(fig)
-        write_remainer_cols(fs, src_df, fs.drop_null_cols)
-        save_ifs()
-    null_accept_pth_from_min_error = float_text_input("null_accept_pth_from_min_error", fs.null_accept_pth_from_min_error)
-    if st.button("drop null columns"):
-        drop_null_cols(null_accept_pth_from_min_error)
-    elif fs.null_accept_pth_from_min_error is not None:
-        drop_null_cols(fs.null_accept_pth_from_min_error)
-
-    ############################
-    # feature importance columns
-    ############################
-    st.write("---")
-    st.header("feature importance")
-    if st.button("create feature importance"):
-        # Calculate feature importance
-        fs.create_feature_importance_df(df=src_df)
-        save_ifs()
-    if fs.feature_importance_p_df is not None:
-        fig = plt.figure(figsize=(5, 2))
-        plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
-        plt.xticks(rotation=90)
-        st.pyplot(fig)
-
-    # calculate error with corr each thresould
-    th_ranges = float_text_range_input(
-        "importance thresould range", 0.0, 0.5, 10)
-    if st.button("calculate error with feature importance each thresould"):
-        def fit_importance_cols(th: float):
-            fs.fit_feature_importance_cols(df=src_df, importance_p_th=th, verbose=False)
-            save_ifs()
-        progress_bar(th_ranges, fit_importance_cols)
-    if fs.fearute_importance_error_list is not None:
-        # Plot null trends
-        fig, error_df = fs.plot_feature_importance_state()
-        st.pyplot(fig)
-
-    # Determine columns to drop
-    def drop_fs_cols(th: float):
-        null_error_df, fig = fs.plot_select_feature_importance(
-            accept_pth_from_min_error=th)
-        st.pyplot(fig)
-        write_remainer_cols(fs, src_df, fs.drop_feature_importance_cols)
-        save_ifs()
-    fearute_importance_accept_pth_from_min_error = float_text_input("fearute_importance_accept_pth_from_min_error", fs.fearute_importance_accept_pth_from_min_error)
-    if st.button("drop importance columns"):
-        drop_fs_cols(fearute_importance_accept_pth_from_min_error)
-    elif fs.fearute_importance_accept_pth_from_min_error is not None:
-        drop_fs_cols(fs.fearute_importance_accept_pth_from_min_error)
-
-
-
- 
-    # st.header("nullノイズの高い列を削除")
-    # ranges = float_text_range_input("null", 0.0, 0.3, 10)
-    # if st.button("nullノイズの計算"):
-    #     for th in ranges:
-    #         fs.fit_null_cols(df=src_df, null_p_th=th, error_importance_func=calc_error_importance, verbose=True)
+    # # Determine columns to drop
+    # def drop_null_cols(th: float):
+    #     null_error_df, fig = fs.plot_select_nulls(
+    #         accept_pth_from_min_error=th)
+    #     st.pyplot(fig)
+    #     write_remainer_cols(fs, src_df, fs.drop_null_cols)
     #     save_ifs()
-    # null_accep_pth_from_min_error = float_text_input("null最小エラーからの許容値", fs.null_accept_pth_from_min_error)
-    # if st.button("nullノイズの削除"):
-    #     # 落とす列を決める
-    #     null_error_df, figs = fs.plot_select_nulls(accept_pth_from_min_error=null_accep_pth_from_min_error)
-    #     st.write("・fs.drop_null_cols:")
-    #     st.write(", ".join(fs.drop_null_cols))
-    #     write_remainer_cols(fs, src_df)
-    #     for fig in figs:
-    #         st.pyplot(fig)
-    #     save_ifs()
+    # null_accept_pth_from_min_error = float_text_input("null_accept_pth_from_min_error", fs.null_accept_pth_from_min_error)
+    # if st.button("drop null columns"):
+    #     drop_null_cols(null_accept_pth_from_min_error)
+    # elif fs.null_accept_pth_from_min_error is not None:
+    #     drop_null_cols(fs.null_accept_pth_from_min_error)
 
-    # st.header("feature importanceで重要度が低い列を削除")
-    # ranges = float_text_range_input("feature importance", 0.0, 1.0, 10)
-    # if st.button("feature importanceの計算"):
-    #     for th in ranges:
-    #         fs.fit_feature_importance_cols(df=src_df, importance_p_th=th, error_importance_func=calc_error_importance, verbose=True)
+    # ############################
+    # # feature importance columns
+    # ############################
+    # st.write("---")
+    # st.header("feature importance")
+    # if st.button("create feature importance"):
+    #     # Calculate feature importance
+    #     fs.create_feature_importance_df(df=src_df)
     #     save_ifs()
-    # feature_importance_accep_pth_from_min_error = float_text_input("feature importance最小エラーからの許容値", fs.fearute_importance_accept_pth_from_min_error)
-    # if st.button("feature importanceの削除"):
-    #     # 落とす列を決める
-    #     feature_importance_error_df, figs = fs.plot_select_feature_importance(accept_pth_from_min_error=feature_importance_accep_pth_from_min_error)
-    #     st.write("・fs.drop_feature_importance_cols:")
-    #     st.write(", ".join(fs.drop_feature_importance_cols))
-    #     write_remainer_cols(fs, src_df)
-    #     for fig in figs:
-    #         st.pyplot(fig)
+    # if fs.feature_importance_p_df is not None:
+    #     fig = plt.figure(figsize=(5, 2))
+    #     plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
+    #     plt.xticks(rotation=90)
+    #     st.pyplot(fig)
+
+    # # calculate error with corr each thresould
+    # th_ranges = float_text_range_input(
+    #     "importance thresould range", 0.0, 0.5, 10)
+    # if st.button("calculate error with feature importance each thresould"):
+    #     def fit_importance_cols(th: float):
+    #         fs.fit_feature_importance_cols(df=src_df, importance_p_th=th, verbose=False)
+    #         save_ifs()
+
+    #     progress_bar(th_ranges, fit_importance_cols)
+    # if fs.fearute_importance_error_list is not None:
+    #     # Plot null trends
+    #     fig, error_df = fs.plot_feature_importance_state()
+    #     st.pyplot(fig)
+
+    # # Determine columns to drop
+    # def drop_fs_cols(th: float):
+    #     null_error_df, fig = fs.plot_select_feature_importance(
+    #         accept_pth_from_min_error=th)
+    #     st.pyplot(fig)
+    #     write_remainer_cols(fs, src_df, fs.drop_feature_importance_cols)
     #     save_ifs()
+    # fearute_importance_accept_pth_from_min_error = float_text_input("fearute_importance_accept_pth_from_min_error", fs.fearute_importance_accept_pth_from_min_error)
+    # if st.button("drop importance columns"):
+    #     drop_fs_cols(fearute_importance_accept_pth_from_min_error)
+    # elif fs.fearute_importance_accept_pth_from_min_error is not None:
+    #     drop_fs_cols(fs.fearute_importance_accept_pth_from_min_error)
+
     return fs

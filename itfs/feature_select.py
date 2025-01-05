@@ -47,22 +47,6 @@ class IterativeFeatureSelector:
             ycol (str): Column name of the target variable
             min_col_size (int): Minimum number of columns. Feature selection is not performed if the number of columns is less than this. Default: 5
         """
-        # """ 特徴量選択のインスタンスを作成
-        # Args:
-        #     calc_error_importance (Callable[[pd.DataFrame, np.ndarray], dict[str, any]]): スコアと重要度を計算する関数.
-        #         引数は(xdf, ys)
-        #         cross validation想定で戻り値のdictは以下
-        #         {
-        #             "oof_error" (float): oof_error, # oofのエラー
-        #             "cv_errors" (np.ndarray[float]): cv_errors, # cvの各foldのエラー
-        #             "importance_df" (pd.DataFrale): importance_df # 重要度のDataFrame, indexが特徴量名、各列は各foldの重要度
-        #         }
-        #     force_drop_cols (list[str]): 強制的に落とすカラム
-        #     ignore_cols (list[str]): 無視するカラム.
-        #         このカラムは特徴量選択の対象外とする.
-        #     ycol (str): 目的変数のカラム名
-        #     min_col_size (int): 最低限の列数. これ以下の列数の場合は特徴量選択を行わない. Default: 5
-        # """
         # 入力をコピー
         self.calc_error_importance = calc_error_importance
         self.force_drop_cols = force_drop_cols
@@ -72,6 +56,8 @@ class IterativeFeatureSelector:
 
         # エラーが最小のもの
         self.min_error_item: dict|None = None
+        # 選択したもの
+        self.selected_item: dict|None = None
 
         # 値が一定の列
         self.const_cols: list[str] = None
@@ -111,6 +97,31 @@ class IterativeFeatureSelector:
         # 受け入れ可能な確率
         self.fearute_importance_accept_pth_from_min_error = None
     
+    def create_dst_dict(self)->dict[str, any]:
+        def tostrlist(vals):
+            if vals is None:
+                return []
+            return [str(v) for v in vals]
+        def tofloatlist(vals):
+            return [float(v) for v in vals]
+        dst_dict = {
+            "force_drop_cols": tostrlist(self.force_drop_cols),
+            "ignore_cols": tostrlist(self.ignore_cols),
+            "ycol": str(self.ycol),
+            "const_cols": tostrlist(self.const_cols),
+            "drop_cor_cols": tostrlist(self.drop_cor_cols),
+            "drop_null_cols": tostrlist(self.drop_null_cols),
+            "drop_feature_importance_cols": tostrlist(self.drop_feature_importance_cols),
+        }
+        dst_dict["all_drop_cols"] = tostrlist(self.get_all_drop_selected_cols(is_all_true=True))
+        for item, name in zip([self.min_error_item, self.selected_item], ["min_error_item", "selected"]):
+            if item is not None:
+                # print(name, item)
+                dst_dict[f"{name}_oof_error"] = item["oof_error"]
+                dst_dict[f"{name}_cv_errors"] = tofloatlist(item["cv_errors"])
+                # dst_dict[f"{name}_use_cols"] = tostrlist("__".split(item["concat_col_name"]))
+        return dst_dict
+
     def _update_min_error_item(self, res_dict: dict[str, any]):
         is_update = False
         if self.min_error_item is None:
@@ -120,6 +131,47 @@ class IterativeFeatureSelector:
                 is_update = True
         if is_update:
             self.min_error_item = copy.deepcopy(res_dict)
+
+    def get_all_drop_selected_cols(
+            self,
+            is_all_true: bool = False,
+            is_drop_const_cols: bool = False,
+            is_drop_cor_cols: bool = False,
+            is_drop_null_cols: bool = False,
+            is_drop_feature_importance_cols: bool = False,
+            is_drop_ycol: bool = True) -> list[str]:
+        """ get all drop selected columns
+        Args:
+            df (pd.DataFrame): DataFrame
+            is_all_true (bool): Whether to drop all columns. Default: False
+            is_drop_const_cols (bool): Whether to drop const_cols. Default: False
+            is_drop_cor_cols (bool): Whether to drop cor_cols. Default: False
+            is_drop_null_cols (bool): Whether to drop null_cols. Default: False
+            is_drop_feature_importance_cols (bool): Whether to drop feature_importance_cols. Default: False
+            is_drop_ycol (bool): Whether to drop ycol. Default: True
+        Returns:
+            pd.DataFrame: DataFrame with selected columns dropped
+        """
+        drop_cols = []
+        if is_all_true:
+            is_drop_const_cols = True
+            is_drop_cor_cols = True
+            is_drop_null_cols = True
+            is_drop_feature_importance_cols = True
+            is_drop_ycol = True
+        drop_cols += self.force_drop_cols
+        drop_cols += self.ignore_cols
+        if is_drop_const_cols and self.const_cols is not None:
+            drop_cols += self.const_cols
+        if is_drop_cor_cols and self.drop_cor_cols is not None:
+            drop_cols += self.drop_cor_cols
+        if is_drop_null_cols and self.drop_null_cols is not None:
+            drop_cols += self.drop_null_cols
+        if is_drop_feature_importance_cols and self.drop_feature_importance_cols is not None:
+            drop_cols += self.drop_feature_importance_cols
+        if is_drop_ycol:
+            drop_cols += [self.ycol]
+        return drop_cols
 
     def drop_selected_cols(
             self,
@@ -142,37 +194,14 @@ class IterativeFeatureSelector:
         Returns:
             pd.DataFrame: DataFrame with selected columns dropped
         """
-        # """ 選択された列を削除する
-        # Args:
-        #     df (pd.DataFrame): データフレーム
-        #     is_all_true (bool): 全ての列を削除するかどうか. Default: False
-        #     is_drop_const_cols (bool): const_colsを削除するかどうか. Default: False
-        #     is_drop_cor_cols (bool): cor_colsを削除するかどうか. Default: False
-        #     is_drop_null_cols (bool): null_colsを削除するかどうか. Default: False
-        #     is_drop_feature_importance_cols (bool): feature_importance_colsを削除するかどうか. Default: False
-        #     is_drop_ycol (bool): ycolを削除するかどうか. Default: True
-        # Returns:
-        #     pd.DataFrame: 選択された列を削除したデータフレーム
-        # """
-        drop_cols = []
-        if is_all_true:
-            is_drop_const_cols = True
-            is_drop_cor_cols = True
-            is_drop_null_cols = True
-            is_drop_feature_importance_cols = True
-            is_drop_ycol = True
-        drop_cols += self.force_drop_cols
-        drop_cols += self.ignore_cols
-        if is_drop_const_cols and self.const_cols is not None:
-            drop_cols += self.const_cols
-        if is_drop_cor_cols and self.drop_cor_cols is not None:
-            drop_cols += self.drop_cor_cols
-        if is_drop_null_cols and self.drop_null_cols is not None:
-            drop_cols += self.drop_null_cols
-        if is_drop_feature_importance_cols and self.drop_feature_importance_cols is not None:
-            drop_cols += self.drop_feature_importance_cols
-        if is_drop_ycol:
-            drop_cols += [self.ycol]
+        drop_cols = self.get_all_drop_selected_cols(
+            is_all_true=is_all_true,
+            is_drop_const_cols=is_drop_const_cols,
+            is_drop_cor_cols=is_drop_cor_cols,
+            is_drop_null_cols=is_drop_null_cols,
+            is_drop_feature_importance_cols=is_drop_feature_importance_cols,
+            is_drop_ycol=is_drop_ycol)
+
         return drop_cols_ifexist(df=df, cols=drop_cols)
 
     def fit_const_cols(self, df: pd.DataFrame) -> list[str]:
@@ -198,10 +227,12 @@ class IterativeFeatureSelector:
         self.const_cols = const_cols
 
         # constを抜いて一回計算する
+        print("const_cols:", const_cols)
         ta_df = self.drop_selected_cols(df=df, is_drop_const_cols=True)
         ys = df[self.ycol]
         res_dict = self.calc_error_importance(ta_df, ys)
         self._update_min_error_item(res_dict=res_dict)
+        # self.selected_item = copy.deepcopy(res_dict)
 
         return self.const_cols
 
@@ -419,6 +450,8 @@ class IterativeFeatureSelector:
         drop_cols = []
         if min_colsize_idx is not None:
             drop_cols = error_df["temp_drop_cols"].values[min_colsize_idx]
+            # 選ばれたものを保存
+            self.selected_item = copy.deepcopy(ta_df.loc[min_colsize_idx, :].to_dict())
         return drop_cols, error_df, fig
 
     def create_cor_df(self, df: pd.DataFrame):
@@ -465,6 +498,7 @@ class IterativeFeatureSelector:
 
         # 相関がcor_thより高く、削除すべき列名を取得
         cor_cols, detail_df = correlation._get_corr_column_for_drop(df_corr=self.cor_df, threshold=cor_th)
+
         if verbose:
             print("cor_th:", cor_th)
             print("cor_cols:", cor_cols)
@@ -477,6 +511,7 @@ class IterativeFeatureSelector:
             error_dict_list=self.cor_error_list,
             th=cor_th,
             verbose=verbose)
+
 
     def plot_cor_state(self, is_errorp_log: bool=True)->tuple[plt.Figure, pd.DataFrame]:
         """ Plot the state of correlation

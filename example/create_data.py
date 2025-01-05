@@ -1,16 +1,18 @@
 # %%
 import random
-import numpy as np
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 import lightgbm as lgb
+import seaborn as sns
 
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.datasets import fetch_california_housing
 from sklearn.model_selection import train_test_split
 
-from itfs import start_server
-
+from itfs import IterativeFeatureSelector
+# %%
 seed = 42
 np.random.seed(seed)
 random.seed(seed)
@@ -106,103 +108,7 @@ def create_df_dummy()->pd.DataFrame:
     # Add columns to force drop
     df["drop1"] = np.random.rand(len(df))
     return df
-# %%
-############################################
-# Load dataset
-############################################
-# Choose one and comment out the other
-
-# # Dummy data
-# src_df = pd.read_pickle(open("dummy_df.pkl", "rb"))
-
-# Housing price data
-src_df = pd.read_pickle(open("house_df.pkl", "rb"))
-
-
-# %%
-####################
-# Prepare functions to calculate error and importance
-####################
-kf = KFold(n_splits=5, shuffle=True, random_state=0)
-kf_idxs = [(train_idx, test_idx) for train_idx, test_idx in kf.split(src_df)]
-def calc_error_importance(xdf: pd.DataFrame, ys: np.ndarray)-> tuple[np.ndarray[float], pd.DataFrame]:
-    global kf_idxs
-    oof_preds = []
-    oof_trues = []
-    importance_df = []
-    cv_errors = []
-    for fi, (train_valid_idxs, test_idxs) in enumerate(kf_idxs):
-        train_idxs, valid_idxs = train_test_split(train_valid_idxs, test_size=0.2, random_state=0)
-        train_x = xdf.iloc[train_idxs]
-        train_y = ys[train_idxs]
-        valid_x = xdf.iloc[valid_idxs]
-        valid_y = ys[valid_idxs]
-        test_x = xdf.iloc[test_idxs]
-        test_y = ys[test_idxs]
-        # Set hyperparameters
-        params = {
-            'objective': 'regression',
-            'metric': 'rmse',
-            'boosting_type': 'gbdt',
-            'learning_rate': 0.1,
-            'num_leaves': 35,
-            'random_state': seed,
-            'verbose': -1
-        }
-
-        # Train the model
-        verbose_eval=0
-        model = lgb.train(
-            params,
-            train_set=lgb.Dataset(train_x, train_y),
-            valid_sets=lgb.Dataset(valid_x, valid_y),
-            num_boost_round=1000,
-            callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=True), # Callback for early stopping
-                                lgb.log_evaluation(verbose_eval)], # Callback for command-line output
-        )
-
-        # Predict on test data
-        y_pred = model.predict(test_x, num_iteration=model.best_iteration)
-        # Evaluate accuracy (RMSE)
-        cv_error = root_mean_squared_error(y_true=test_y,y_pred=y_pred)
-        cv_errors.append(cv_error)
-        # Add to out-of-fold predictions
-        oof_preds.extend(y_pred.tolist())
-        oof_trues.extend(test_y.tolist())
-
-        # Feature importance
-        importance = model.feature_importance(importance_type="gain")
-        feature_names = train_x.columns
-        temp_imp_df = pd.DataFrame({f"importance{fi}": importance})
-        temp_imp_df.index = feature_names
-        importance_df.append(temp_imp_df)
-    importance_df = pd.concat(importance_df, axis=1)
-    oof_error = root_mean_squared_error(y_true=oof_trues, y_pred=oof_preds)
-    cv_errors = np.array(cv_errors)
-    dst_dict = {
-        "oof_error": oof_error,
-        "cv_errors": cv_errors,
-        "importance_df": importance_df
-    }
-    return dst_dict
-# %%
-def print_cols(label, drop_cols):
-    print(f"・{label}", len(drop_cols))
-    for ci, col in enumerate(drop_cols):
-        print(f"{ci+1}: {col}")
-    cols = fs.drop_selected_cols(df=src_df, is_all_true=True).columns
-    print("・Remaining columns:", len(cols))
-    for col in cols:
-        print(col)
-# %%
-####################
-# Generate an instance of feature selection
-####################
-fs = start_server(
-    src_df=src_df,
-    fs_path="./fs.pkl",
-    ycol="target",
-    calc_error_importance=calc_error_importance
-)
-fs
-
+house_df = create_df_housing()
+house_df.to_pickle("house_df.pkl")
+dummy_df = create_df_dummy()
+dummy_df.to_pickle("dummy_df.pkl")

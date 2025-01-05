@@ -114,11 +114,11 @@ def create_df_dummy()->pd.DataFrame:
 ############################################
 # Choose one and comment out the other
 
-# Dummy data
-src_df = create_df_dummy()
+# # Dummy data
+# src_df = create_df_dummy()
 
-# # Housing price data
-# src_df = create_df_housing()
+# Housing price data
+src_df = create_df_housing()
 
 
 # %%
