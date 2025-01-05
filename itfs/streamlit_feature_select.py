@@ -5,28 +5,21 @@ from pgss import PageSessionState
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import lightgbm as lgb
 import pickle as pkl
 import os
 import seaborn as sns
 import time
-from functools import partial
 from typing import Callable
-import json
 import yaml
-
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
-from sklearn.datasets import fetch_california_housing
-from sklearn.model_selection import train_test_split
 
 if __name__ == "__main__":
     import sys
     sys.path.append("../")
     from itfs import IterativeFeatureSelector
 else:
-    from .feature_select import IterativeFeatureSelector
+    from .feature_select import IterativeFeatureSelector, DellType
 
+VERBOSE = False
 # %%
 def float_text_input(label:str, default:float)->float:
     ''' input text box for float 
@@ -65,6 +58,7 @@ def float_text_range_input(
 def write_remainer_cols(
         fs: IterativeFeatureSelector,
         src_df: pd.DataFrame,
+        dell_type: DellType,
         drop_cols: list[str]|None = None):
         """ display remaining columns
         Args:
@@ -73,8 +67,8 @@ def write_remainer_cols(
         """
         if drop_cols is not None:
             st.write(f"dropped columns({len(drop_cols)}): {', '.join(drop_cols)}")
-
-        remaind_cols = fs.drop_selected_cols(df=src_df, is_all_true=True).columns
+        orless_dell_types = fs._get_orless_delltype(delltype=dell_type)
+        remaind_cols = fs.drop_selected_cols(df=src_df, is_drop_ycol=orless_dell_types).columns
         st.write(f"remaining columns({len(remaind_cols)}): {', '.join(remaind_cols)}")
 
 # %%
@@ -97,20 +91,17 @@ def start_server(
         ignore_cols (list[str], optional): columns to ignore. Defaults to [].
         min_col_size (int, optional): minimum column size. Defaults to 2.
     """
-    print("------")
+
     # create session state instance
     ps = PageSessionState(__file__)
     ps.set_if_not_exist({"init": False})
 
     # local functions
-    def save_ifs():
-        print("fs.drop_cor_cols, save:", fs.drop_cor_cols)
+    def save_ifs(fs: IterativeFeatureSelector):
         pkl.dump(fs, open(fs_path, "wb"))
-
         dst_dict = fs.create_dst_dict()
         with open(fs_path.replace(".pkl", ".yaml"), "w") as f:
             yaml.dump(dst_dict, f)
-
 
     def load_ifs():
         return pkl.load(open(fs_path, "rb"))
@@ -145,20 +136,59 @@ def start_server(
             st.write("calculating error without constant columns...")
             fs.fit_const_cols(df=src_df)
             st.write("done.")
-            print("save1")
-            save_ifs()
+            save_ifs(fs)
         ps.init = True
     fs = load_ifs()
+
+    def fit_select(
+            base_name: str,
+            delltype: DellType,
+            default_range_start: float,
+            default_range_end: float,
+            default_each_calc_size: int):
+        # calculate error with corr each thresould
+        th_ranges = float_text_range_input(
+            f"{base_name} thresould range",
+            default_range_start,
+            default_range_end,
+            default_each_calc_size)
+        if st.button(f"calculate error with {base_name} each thresould"):
+            def core_error_func(th: float):
+                fs.calc_error_each_threshold(
+                    df=src_df,
+                    delltype=delltype, th=th, verbose=VERBOSE)
+                save_ifs(fs)
+            progress_bar(th_ranges, core_error_func)
+        # show state
+        delltype_error_list = [item for item in fs.error_list if item["delltype"] == delltype]
+        if len(delltype_error_list) != 0:
+            # Plot correlation trends
+            fig, error_df = fs.plot_state(delltype=delltype)
+            st.pyplot(fig)
+    
+        # Determine columns to drop
+        def drop_cols(th: float):
+            cor_error_df, fig = fs.plot_select(delltype=delltype, accept_th=th)
+            st.pyplot(fig)
+            write_remainer_cols(fs=fs, src_df=src_df, dell_type=delltype, drop_cols=fs.selected_dropcols[delltype])
+            save_ifs(fs)
+        delltype_accept_th =  fs.accept_ths[delltype]
+        accept_th = float_text_input(f"{base_name} accept th", delltype_accept_th)
+        if st.button(f"drop {base_name} columns"):
+            drop_cols(accept_th)
+        elif delltype_accept_th is not None:
+            drop_cols(delltype_accept_th)
 
     ############################
     # constant columns
     ############################
+    now_dell_type = DellType.CONST
     st.write("---")
     st.header("constant")
-    if fs.const_cols is not None:
-        write_remainer_cols(fs, src_df, fs.const_cols)
-        print("save2")
-        save_ifs()
+    const_cols = fs.selected_dropcols[now_dell_type]
+    if const_cols is not None:
+        write_remainer_cols(
+            fs=fs, src_df=src_df, drop_cols=const_cols, dell_type=now_dell_type)
 
     ############################
     # correration columns
@@ -173,38 +203,18 @@ def start_server(
         if st.button("create correration matrix"):
             st.write("calculatingcorreration matrix...")
             fs.create_cor_df(df=src_df)
-            save_ifs()
+            save_ifs(fs)
             st.write("done.")
             show_heat_map()
     else:
         show_heat_map()
+    fit_select(
+        base_name="correration",
+        delltype=DellType.CORR,
+        default_range_start=0.5,
+        default_range_end=1-1e-8,
+        default_each_calc_size=10)
 
-    # calculate error with corr each thresould
-    th_ranges = float_text_range_input(
-        "corr thresould range", 0.5, 1-1e-8, 10)
-    if st.button("calculate error with corr each thresould"):
-        def fit_corr_cols(th: float):
-            fs.fit_corr_cols(df=src_df, cor_th=th, verbose=False)
-            save_ifs()
-        progress_bar(th_ranges, fit_corr_cols)
-    if fs.cor_error_list is not None:
-        # Plot correlation trends
-        fig, error_df = fs.plot_cor_state()
-        st.pyplot(fig)
-
-    # Determine columns to drop
-    def drop_corr_cols(th: float):
-        cor_error_df, fig = fs.plot_select_cors(
-            accept_pth_from_min_error=th)
-        st.pyplot(fig)
-        write_remainer_cols(fs, src_df, fs.drop_cor_cols)
-        print("save3", th)
-        save_ifs()
-    cor_accept_pth_from_min_error = float_text_input("cor_accept_pth_from_min_error", fs.cor_accept_pth_from_min_error)
-    if st.button("drop correration columns"):
-        drop_corr_cols(cor_accept_pth_from_min_error)
-    elif fs.cor_accept_pth_from_min_error is not None:
-        drop_corr_cols(fs.cor_accept_pth_from_min_error)
 
     ############################
     # null importance columns
@@ -214,84 +224,37 @@ def start_server(
     null_calc_times = float_text_input("null_calc_times", 3)
     if st.button("create null importance"):
         fs.create_null_df(df=src_df, null_times=int(null_calc_times))
-        save_ifs()
+        save_ifs(fs)
     if fs.null_importance_p_df is not None:
         fig = plt.figure(figsize=(5, 2))
         plt.bar(fs.null_importance_p_df["cols"], fs.null_importance_p_df["p_value"])
         plt.xticks(rotation=90)
         st.pyplot(fig)
+    fit_select(
+        base_name="null importance",
+        delltype=DellType.NULL,
+        default_range_start=0.0,
+        default_range_end=0.5,
+        default_each_calc_size=10)
 
-    # calculate error with corr each thresould
-    th_ranges = float_text_range_input(
-        "null thresould range", 0.0, 0.5, 10)
-    if st.button("calculate error with null importance each thresould"):
-        def fit_null_cols(th: float):
-            print("fs.drop_cor_cols1:", fs.drop_cor_cols)
-            fs.fit_null_cols(df=src_df, null_p_th=th, verbose=False)
-            print("fs.drop_cor_cols2:", fs.drop_cor_cols)
-            print("save4")
-            save_ifs()
-            print("fs.drop_cor_cols3:", fs.drop_cor_cols)
-
-        progress_bar(th_ranges, fit_null_cols)
-    # if fs.null_error_list is not None:
-    #     # Plot null trends
-    #     fig, error_df = fs.plot_null_state()
-    #     st.pyplot(fig)
-
-    # # Determine columns to drop
-    # def drop_null_cols(th: float):
-    #     null_error_df, fig = fs.plot_select_nulls(
-    #         accept_pth_from_min_error=th)
-    #     st.pyplot(fig)
-    #     write_remainer_cols(fs, src_df, fs.drop_null_cols)
-    #     save_ifs()
-    # null_accept_pth_from_min_error = float_text_input("null_accept_pth_from_min_error", fs.null_accept_pth_from_min_error)
-    # if st.button("drop null columns"):
-    #     drop_null_cols(null_accept_pth_from_min_error)
-    # elif fs.null_accept_pth_from_min_error is not None:
-    #     drop_null_cols(fs.null_accept_pth_from_min_error)
-
-    # ############################
-    # # feature importance columns
-    # ############################
-    # st.write("---")
-    # st.header("feature importance")
-    # if st.button("create feature importance"):
-    #     # Calculate feature importance
-    #     fs.create_feature_importance_df(df=src_df)
-    #     save_ifs()
-    # if fs.feature_importance_p_df is not None:
-    #     fig = plt.figure(figsize=(5, 2))
-    #     plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
-    #     plt.xticks(rotation=90)
-    #     st.pyplot(fig)
-
-    # # calculate error with corr each thresould
-    # th_ranges = float_text_range_input(
-    #     "importance thresould range", 0.0, 0.5, 10)
-    # if st.button("calculate error with feature importance each thresould"):
-    #     def fit_importance_cols(th: float):
-    #         fs.fit_feature_importance_cols(df=src_df, importance_p_th=th, verbose=False)
-    #         save_ifs()
-
-    #     progress_bar(th_ranges, fit_importance_cols)
-    # if fs.fearute_importance_error_list is not None:
-    #     # Plot null trends
-    #     fig, error_df = fs.plot_feature_importance_state()
-    #     st.pyplot(fig)
-
-    # # Determine columns to drop
-    # def drop_fs_cols(th: float):
-    #     null_error_df, fig = fs.plot_select_feature_importance(
-    #         accept_pth_from_min_error=th)
-    #     st.pyplot(fig)
-    #     write_remainer_cols(fs, src_df, fs.drop_feature_importance_cols)
-    #     save_ifs()
-    # fearute_importance_accept_pth_from_min_error = float_text_input("fearute_importance_accept_pth_from_min_error", fs.fearute_importance_accept_pth_from_min_error)
-    # if st.button("drop importance columns"):
-    #     drop_fs_cols(fearute_importance_accept_pth_from_min_error)
-    # elif fs.fearute_importance_accept_pth_from_min_error is not None:
-    #     drop_fs_cols(fs.fearute_importance_accept_pth_from_min_error)
-
+    ############################
+    # feature importance columns
+    ############################
+    st.write("---")
+    st.header("feature importance")
+    if st.button("create feature importance"):
+        # Calculate feature importance
+        fs.create_feature_importance_df(df=src_df)
+        save_ifs(fs)
+    if fs.feature_importance_p_df is not None:
+        fig = plt.figure(figsize=(5, 2))
+        plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
+        plt.xticks(rotation=90)
+        st.pyplot(fig)
+    fit_select(
+        base_name="feature importance",
+        delltype=DellType.FEATURE_IMPORTANCE,
+        default_range_start=0.0,
+        default_range_end=0.5,
+        default_each_calc_size=10)
     return fs

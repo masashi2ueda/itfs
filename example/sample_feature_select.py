@@ -194,3 +194,4 @@ error_df, fig = fs.plot_select(
 print_cols("fs.drop_feature_importance_cols", fs.selected_dropcols[DellType.FEATURE_IMPORTANCE])
 
 # %%
+fs.create_dst_dict()

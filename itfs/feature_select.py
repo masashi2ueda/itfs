@@ -65,6 +65,7 @@ class IterativeFeatureSelector:
         self.selected_dropcols = {dtp: None for dtp in DellType}
         self.accept_ths = {dtp: None for dtp in DellType}
         self.selected_error = {dtp: None for dtp in DellType}
+        self.last_selected_error = None
 
         # 相関行列
         self.cor_df: pd.DataFrame|None = None
@@ -75,6 +76,51 @@ class IterativeFeatureSelector:
         # feature importanceのrate
         self.feature_importance_p_df: pd.DataFrame|None = None
 
+
+    def create_dst_dict(self)->dict[str, any]:
+        def tostrlist(vals):
+            if vals is None:
+                return []
+            return [str(v) for v in vals]
+        def tofloatlist(vals):
+            return [float(v) for v in vals]
+        dst_dict = {
+            "force_drop_cols": tostrlist(self.force_drop_cols),
+            "ignore_cols": tostrlist(self.ignore_cols),
+            "ycol": str(self.ycol)
+        }
+        dst_dict["all_selected_drop_cols"] = []
+        for delltype in DellType:
+            cols = tostrlist(self.selected_dropcols[delltype])
+            dst_dict[f"all_selected_drop_cols"] += cols
+            dst_dict[f"selected_drop_{delltype.name}_cols"] = cols
+
+
+        names = []
+        error_items = []
+
+        names.append("global_min")
+        min_error_item = min(self.error_list, key=lambda x: x["oof_error"])
+        error_items.append(min_error_item)
+
+        for delltype in DellType:
+            names.append(delltype.name+"_selected")
+            error_items.append(self.selected_error[delltype])
+
+        names.append("last_selected")
+        error_items.append(self.last_selected_error)
+
+
+        for item, name in zip(error_items, names):
+            if item is not None:
+                temp_dict = {}
+                temp_dict["oof_error"] = item["oof_error"]
+                temp_dict["cv_errors"] = tofloatlist(item["cv_errors"])
+                temp_dict["use_cols"] = tostrlist(item["use_col_names"])
+                dst_dict[name] = temp_dict
+            else:
+                dst_dict[name] = {}
+        return dst_dict
 
     def get_all_drop_selected_cols(
             self,
@@ -379,7 +425,8 @@ class IterativeFeatureSelector:
         if min_colsize_idx is not None:
             drop_cols = error_df["temp_drop_cols"].values[min_colsize_idx]
             # 選ばれたものを保存
-            self.selected_error = copy.deepcopy(ta_df.loc[min_colsize_idx, :].to_dict())
+            self.selected_error[delltype] = copy.deepcopy(ta_df.loc[min_colsize_idx, :].to_dict())
+            self.last_selected_error = copy.deepcopy(ta_df.loc[min_colsize_idx, :].to_dict())
         return drop_cols, error_df, fig
 
     def create_cor_df(self, df: pd.DataFrame):
@@ -662,11 +709,3 @@ class IterativeFeatureSelector:
         # maxが1になるように正規化
         mean_importance_df["mean_importance_p"] = mean_importance_df["mean_importance"] / mean_importance_df["mean_importance"].max()
         self.feature_importance_p_df = mean_importance_df.reset_index(drop=True)
-
-
-
-# %%
-
-# %%
-
-# %%
