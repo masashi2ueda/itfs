@@ -1,124 +1,32 @@
 # %%
 import random
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
 import lightgbm as lgb
 import seaborn as sns
+import matplotlib.pyplot as plt
 
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.datasets import fetch_california_housing
 from sklearn.model_selection import train_test_split
 
-from itfs import IterativeFeatureSelector
-# %%
+from itfs import IterativeFeatureSelector, DellType
 seed = 42
 np.random.seed(seed)
 random.seed(seed)
-# %%
-############################################
-# Create dataset
-############################################
-def create_df_housing()->pd.DataFrame:
-    dataset = fetch_california_housing()
-    X = pd.DataFrame(dataset.data, columns=dataset.feature_names)
-    y = pd.Series(dataset.target, name='target')
-    df = pd.concat([y,X], axis=1)
-    # Convert some numerical features to categorical features
-    cat_cols = ["MedInc", "HouseAge", "AveRooms", "AveBedrms"]
-    for col in cat_cols:
-        bin_size = min(30, df[col].nunique())
-        df[col] = pd.cut(df[col], bins=bin_size, labels=[f"{col}_{i}" for i in range(bin_size)])
 
-    # Add features with noise
-    num_nz_cols = ["AveOccup", "Latitude"]
-    for col in num_nz_cols:
-        for nz_ratio in [2, 0.01]:
-            df[f"{col}_nz_{nz_ratio}"] = df[col] + np.random.normal(0, np.std(df[col].values)*nz_ratio, len(df))
-    cat_nz_cols = ["AveOccup"]
-    for col in cat_nz_cols:
-        for nz_ratio in [0.8, 0.01]:
-            nzcol = f"{col}_nz_{nz_ratio}"
-            vals = df[col].values.copy()
-            nz_size = int(len(df)*nz_ratio)
-            nx_idxs = np.random.choice(np.arange(len(df)),nz_size , replace=False)
-            nz_vals = np.random.choice(df[col].unique(), nz_size)
-            vals[nx_idxs] = nz_vals
-            df[nzcol] = vals
-    # Add fixed values
-    df["fixed1"] = 1
-    df["fixed2"] = "a"
-    # Add random columns
-    df["random1"] = np.random.rand(len(df))
-    # Add columns with nearly identical correlation
-    df["Population_copy"] = df["Population"].values.copy() 
-    # Add columns to ignore but still use
-    df["ignore1"] = np.random.rand(len(df))
-    # Add columns to force drop
-    df["drop1"] = np.random.rand(len(df))
-    return df
-
-
-def create_df_dummy()->pd.DataFrame:
-    data_size = 50000
-    df = pd.DataFrame({})
-    df["x1"] = np.random.rand(data_size)
-    df["x2"] = np.random.randn(data_size)
-    df["x3"] = np.random.uniform(-0.5,0.5, data_size)
-    df["x4"] = np.random.rand(data_size)
-    df["x5"] = np.random.randn(data_size)
-    df["x6"] = np.random.uniform(-0.5,0.5, data_size)
-    for c in df.columns:
-        df[c] = (df[c] - np.mean(df[c].values) )/ np.std(df[c].values) 
-    df["target"] = np.mean(df.values, axis=1) + np.random.normal(0, 0.01, len(df))
-
-    # Convert some numerical features to categorical features
-    cat_cols = ["x1", "x2"]
-    for col in cat_cols:
-        bin_size = min(30, df[col].nunique())
-        df[col] = pd.cut(df[col], bins=bin_size, labels=[f"{col}_{i}" for i in range(bin_size)])
-
-    # Add columns with identical or nearly identical correlation
-    df["x4_copy"] = df["x4"].values.copy() 
-    df["x5_near"] = df["x5"].values.copy() + np.random.normal(0, 0.001, len(df))
-
-    # Add features with noise
-    col = "x6"
-    nz_ratio = 100
-    df[f"{col}_nz_{nz_ratio}"] = df[col] + np.random.normal(0, np.std(df[col].values)*nz_ratio, len(df))
-
-    col = "x1"
-    nz_ratio = 0.8
-    nzcol = f"{col}_nz_{nz_ratio}"
-    vals = df[col].values.copy()
-    nz_size = int(len(df)*nz_ratio)
-    nx_idxs = np.random.choice(np.arange(len(df)),nz_size , replace=False)
-    nz_vals = np.random.choice(df[col].unique(), nz_size)
-    vals[nx_idxs] = nz_vals
-    df[nzcol] = vals
-
-    # Add fixed values
-    df["fixed1"] = 1
-    df["fixed2"] = "a"
-    # Add random columns
-    df["random1"] = np.random.rand(len(df))
-    # Add columns to ignore but still use
-    df["ignore1"] = np.random.rand(len(df))
-    # Add columns to force drop
-    df["drop1"] = np.random.rand(len(df))
-    return df
 # %%
 ############################################
 # Load dataset
 ############################################
 # Choose one and comment out the other
 
-# # Dummy data
-# src_df = create_df_dummy()
+# Dummy data
+src_df = pd.read_pickle(open("dummy_df.pkl", "rb"))
 
 # Housing price data
-src_df = create_df_housing()
+# src_df = pd.read_pickle(open("house_df.pkl", "rb"))
 
 
 # %%
@@ -213,12 +121,13 @@ fs = IterativeFeatureSelector(
 # Remove columns with constant values
 ####################
 fs.fit_const_cols(df=src_df)
-print_cols("fs.const_cols", fs.const_cols)
+print_cols("const_cols", fs.selected_dropcols[DellType.CONST])
 
 # %%
 ####################
 # Remove highly correlated columns
 ####################
+now_dell_type = DellType.CORR
 # Calculate correlation
 fs.create_cor_df(df=src_df)
 sns.heatmap(fs.cor_df, annot=True, fmt=".2f", cmap="coolwarm")
@@ -226,20 +135,20 @@ sns.heatmap(fs.cor_df, annot=True, fmt=".2f", cmap="coolwarm")
 # %%
 # Calculate score based on correlation
 for cor_th in np.linspace(0.8, 1.0-1e-9, 20):
-    fs.fit_corr_cols(df=src_df, cor_th=cor_th, verbose=True)
+    fs.calc_error_each_threshold(df=src_df, delltype=now_dell_type, th=cor_th, verbose=True)
 # Plot correlation trends
-fig, error_df = fs.plot_cor_state()
+fig, error_df = fs.plot_state(delltype=now_dell_type)
 
 # %%
 # Determine columns to drop
-cor_error_df = fs.plot_select_cors(
-    accept_pth_from_min_error=0.1)
-print_cols("fs.drop_cor_cols", fs.drop_cor_cols)
+cor_error_df = fs.plot_select(delltype=now_dell_type,accept_th=0.1)
+print_cols("fs.drop_cor_cols", fs.selected_dropcols[DellType.CORR])
 
 # %%
 ####################
 # Remove columns with high null noise
 ####################
+now_dell_type = DellType.NULL
 # Calculate null importance
 fs.create_null_df(df=src_df, null_times=3)
 plt.figure(figsize=(5, 2))
@@ -251,18 +160,19 @@ plt.close()
 # %%
 # Calculate score based on null importance
 for th in np.linspace(0.0, 0.8 , 10):
-    fs.fit_null_cols(df=src_df, null_p_th=th, verbose=True)
-fig, error_df = fs.plot_null_state()
+    fs.calc_error_each_threshold(df=src_df, delltype=now_dell_type, th=th, verbose=True)
+fig, error_df = fs.plot_state(delltype=now_dell_type)
 # %%
 # Determine columns to drop
-null_error_df = fs.plot_select_nulls(accept_pth_from_min_error=0.1)
-print_cols("fs.drop_null_cols", fs.drop_null_cols)
+null_error_df = fs.plot_select(delltype=now_dell_type,accept_th=0.1)
+print_cols("fs.drop_null_cols", fs.selected_dropcols[DellType.NULL])
 
 
 # %%
 ####################
 # Remove columns with low feature importance
 ####################
+now_dell_type = DellType.FEATURE_IMPORTANCE
 # Calculate feature importance
 fs.create_feature_importance_df(df=src_df)
 plt.figure(figsize=(5, 2))
@@ -273,12 +183,14 @@ plt.close()
 # %%
 # Calculate score based on feature importance
 for th in np.linspace(0.0, 0.5, 10):
-    fs.fit_feature_importance_cols(
-        df=src_df, importance_p_th=th, verbose=True)
-fig, error_df = fs.plot_feature_importance_state()
+    fs.calc_error_each_threshold(
+        df=src_df,delltype=now_dell_type, th=th, verbose=True)
+fig, error_df = fs.plot_state(delltype=now_dell_type)
 
 # %%
 # Determine columns to drop
-error_df, fig = fs.plot_select_feature_importance(
-    accept_pth_from_min_error=0.1)
-print_cols("fs.drop_feature_importance_cols", fs.drop_feature_importance_cols)
+error_df, fig = fs.plot_select(
+    delltype=now_dell_type,accept_th=0.1)
+print_cols("fs.drop_feature_importance_cols", fs.selected_dropcols[DellType.FEATURE_IMPORTANCE])
+
+# %%

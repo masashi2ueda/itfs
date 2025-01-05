@@ -2,10 +2,10 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import japanize_matplotlib
 import copy
 
-from typing import Callable
+from enum import Enum
+from typing import Callable, Literal
 from scipy import stats
 
 if __name__ == "__main__":
@@ -16,7 +16,11 @@ else:
     from . import correlation
 # %%
 MIN_DIFF = 1e-5
-
+class DellType(Enum):
+    CONST = 1
+    CORR = 2
+    NULL = 3
+    FEATURE_IMPORTANCE = 4
 # %%
 def drop_cols_ifexist(df: pd.DataFrame, cols: list[str])->pd.DataFrame:
     drop_cols = [c for c in cols if c in df.columns]
@@ -54,121 +58,48 @@ class IterativeFeatureSelector:
         self.ycol = ycol
         self.min_col_size = min_col_size
 
-        # エラーが最小のもの
-        self.min_error_item: dict|None = None
-        # 選択したもの
-        self.selected_item: dict|None = None
+        # エラーのリスト
+        self.error_list: list[dict] = []
 
-        # 値が一定の列
-        self.const_cols: list[str] = None
+        # 落とす列の名前
+        self.selected_dropcols = {dtp: None for dtp in DellType}
+        self.accept_ths = {dtp: None for dtp in DellType}
+        self.selected_error = {dtp: None for dtp in DellType}
 
-        ############################## 
-        # 相関が高い列を除外する際に用いるデータ群
-        ##############################
-        # 相関で落とす列
-        self.drop_cor_cols: list[str] = None
         # 相関行列
         self.cor_df: pd.DataFrame|None = None
-        # 各閾値を最小した場合のエラー値のリスト
-        self.cor_error_list: list[dict] = None
-        # 受け入れ可能な確率
-        self.cor_accept_pth_from_min_error = None
 
-        ##############################
-        # null importanceで除外する際に用いるデータ群
-        ##############################
-        # null importanceのp値
-        # 帰無仮説：null_importances<=importances
-        # p値は帰無仮説が正しい確率＝null_importances<=importancesの確率
+        # null importanceのrate
         self.null_importance_p_df: pd.DataFrame|None = None
-        # null importanceで落とす列
-        self.drop_null_cols: list[str] = None
-        # 各閾値を最小した場合のエラー値のリスト
-        self.null_error_list: list[dict] = None
-        # 受け入れ可能な確率
-        self.null_accept_pth_from_min_error = None
 
-        ##############################
-        # feature importanceで除外する際に用いるデータ群
-        ##############################
+        # feature importanceのrate
         self.feature_importance_p_df: pd.DataFrame|None = None
-        self.drop_feature_importance_cols: list[str] = None
-        self.fearute_importance_error_list: list[dict] = None
-        # 受け入れ可能な確率
-        self.fearute_importance_accept_pth_from_min_error = None
-    
-    def create_dst_dict(self)->dict[str, any]:
-        def tostrlist(vals):
-            if vals is None:
-                return []
-            return [str(v) for v in vals]
-        def tofloatlist(vals):
-            return [float(v) for v in vals]
-        dst_dict = {
-            "force_drop_cols": tostrlist(self.force_drop_cols),
-            "ignore_cols": tostrlist(self.ignore_cols),
-            "ycol": str(self.ycol),
-            "const_cols": tostrlist(self.const_cols),
-            "drop_cor_cols": tostrlist(self.drop_cor_cols),
-            "drop_null_cols": tostrlist(self.drop_null_cols),
-            "drop_feature_importance_cols": tostrlist(self.drop_feature_importance_cols),
-        }
-        dst_dict["all_drop_cols"] = tostrlist(self.get_all_drop_selected_cols(is_all_true=True))
-        for item, name in zip([self.min_error_item, self.selected_item], ["min_error_item", "selected"]):
-            if item is not None:
-                # print(name, item)
-                dst_dict[f"{name}_oof_error"] = item["oof_error"]
-                dst_dict[f"{name}_cv_errors"] = tofloatlist(item["cv_errors"])
-                # dst_dict[f"{name}_use_cols"] = tostrlist("__".split(item["concat_col_name"]))
-        return dst_dict
 
-    def _update_min_error_item(self, res_dict: dict[str, any]):
-        is_update = False
-        if self.min_error_item is None:
-            is_update = True
-        else:
-            if res_dict["oof_error"] < self.min_error_item["oof_error"]:
-                is_update = True
-        if is_update:
-            self.min_error_item = copy.deepcopy(res_dict)
 
     def get_all_drop_selected_cols(
             self,
             is_all_true: bool = False,
-            is_drop_const_cols: bool = False,
-            is_drop_cor_cols: bool = False,
-            is_drop_null_cols: bool = False,
-            is_drop_feature_importance_cols: bool = False,
+            is_use_delltypes: list[DellType] = [],
             is_drop_ycol: bool = True) -> list[str]:
         """ get all drop selected columns
         Args:
             df (pd.DataFrame): DataFrame
             is_all_true (bool): Whether to drop all columns. Default: False
-            is_drop_const_cols (bool): Whether to drop const_cols. Default: False
-            is_drop_cor_cols (bool): Whether to drop cor_cols. Default: False
-            is_drop_null_cols (bool): Whether to drop null_cols. Default: False
-            is_drop_feature_importance_cols (bool): Whether to drop feature_importance_cols. Default: False
+            is_use_delltypes (list[DellType]): Whether to use DellType. Default: []
             is_drop_ycol (bool): Whether to drop ycol. Default: True
         Returns:
-            pd.DataFrame: DataFrame with selected columns dropped
+            list[str]: Names of columns to be dropped
         """
         drop_cols = []
         if is_all_true:
-            is_drop_const_cols = True
-            is_drop_cor_cols = True
-            is_drop_null_cols = True
-            is_drop_feature_importance_cols = True
+            is_use_delltypes = [dtp for dtp in DellType]
             is_drop_ycol = True
         drop_cols += self.force_drop_cols
         drop_cols += self.ignore_cols
-        if is_drop_const_cols and self.const_cols is not None:
-            drop_cols += self.const_cols
-        if is_drop_cor_cols and self.drop_cor_cols is not None:
-            drop_cols += self.drop_cor_cols
-        if is_drop_null_cols and self.drop_null_cols is not None:
-            drop_cols += self.drop_null_cols
-        if is_drop_feature_importance_cols and self.drop_feature_importance_cols is not None:
-            drop_cols += self.drop_feature_importance_cols
+        for dtp in is_use_delltypes:
+            ta_cols = self.selected_dropcols[dtp]
+            if ta_cols is not None:
+                drop_cols += ta_cols
         if is_drop_ycol:
             drop_cols += [self.ycol]
         return drop_cols
@@ -177,32 +108,95 @@ class IterativeFeatureSelector:
             self,
             df: pd.DataFrame,
             is_all_true: bool = False,
-            is_drop_const_cols: bool = False,
-            is_drop_cor_cols: bool = False,
-            is_drop_null_cols: bool = False,
-            is_drop_feature_importance_cols: bool = False,
+            is_use_delltypes: list[DellType] = [],
             is_drop_ycol: bool = True) -> pd.DataFrame:
         """ Drop selected columns
         Args:
             df (pd.DataFrame): DataFrame
             is_all_true (bool): Whether to drop all columns. Default: False
-            is_drop_const_cols (bool): Whether to drop const_cols. Default: False
-            is_drop_cor_cols (bool): Whether to drop cor_cols. Default: False
-            is_drop_null_cols (bool): Whether to drop null_cols. Default: False
-            is_drop_feature_importance_cols (bool): Whether to drop feature_importance_cols. Default: False
+            is_use_delltypes (list[DellType]): Whether to use DellType. Default: []
             is_drop_ycol (bool): Whether to drop ycol. Default: True
         Returns:
             pd.DataFrame: DataFrame with selected columns dropped
         """
         drop_cols = self.get_all_drop_selected_cols(
             is_all_true=is_all_true,
-            is_drop_const_cols=is_drop_const_cols,
-            is_drop_cor_cols=is_drop_cor_cols,
-            is_drop_null_cols=is_drop_null_cols,
-            is_drop_feature_importance_cols=is_drop_feature_importance_cols,
+            is_use_delltypes=is_use_delltypes,
             is_drop_ycol=is_drop_ycol)
 
         return drop_cols_ifexist(df=df, cols=drop_cols)
+
+    def _update_error_list(
+            self,
+            delltype: DellType,
+            df: pd.DataFrame,
+            ta_df: pd.DataFrame,
+            temp_drop_cols: list[str],
+            th: float,
+            verbose: bool = False) -> None:
+        """ エラーリストを更新する
+        Args:
+            delltype (DellType): Type of deletion
+            df (pd.DataFrame): オリジナルのデータフレーム
+            ta_df (pd.DataFrame): すでに不要なことが決定している特徴量を除外した後のデータフレーム
+            temp_drop_cols (list[str]): 今回削除する列名
+            error_dict_list (list[dict]|None): エラーのリスト
+            th (float): 登録するしきい値
+            verbose (bool): デバッグ情報を表示するかどうか
+        """
+        # 今回の不要な列を消す
+        xdf = ta_df.drop(columns=temp_drop_cols)
+
+        # 予測対象の列
+        ys = df[self.ycol]
+
+        # 列が少なすぎる場合は終了
+        if xdf.shape[1] < self.min_col_size:
+            if verbose:
+                print("xdf.shape:", xdf.shape, "too small columns size")
+            return
+
+        # 今回使う列名の一覧
+        concat_col_name = "__".join(xdf.columns.tolist())
+        # scoreを計算するべきかどうか？
+        is_calc = True
+        # もう何回か計算している　かつ
+        if len(self.error_list) != 0:
+            # 今回の列名がすでにある　なら計算しない
+            if concat_col_name in [item["concat_col_name"] for item in self.error_list]:
+                if verbose:
+                    print("this concat_col_name is already calculated")
+                is_calc = False
+
+        if is_calc:
+            # まだないので計算する
+            res_dict = self.calc_error_importance(xdf, ys)
+            if verbose:
+                print(f"calculated error:{res_dict}")
+        else:
+            # すでにあるので、それを使う
+            ex_item = [item for item in self.error_list if item["concat_col_name"] == concat_col_name][0]
+            res_dict = copy.deepcopy(ex_item)
+
+        # listに登録するかどうか
+        is_regist = True
+        # もう何回か登録している かつ
+        if len(self.error_list) != 0:
+            # 今回のthがすでにある　なら登録しない
+            if 1<=len([item for item in self.error_list if item["th"] == th and item["delltype"] == delltype]):
+                is_regist = False
+                if verbose:
+                    print("this th is already registered")
+
+        # 登録する
+        if is_regist:
+            use_col_names = xdf.columns.tolist()
+            res_dict["delltype"] = delltype
+            res_dict["th"] = th
+            res_dict["temp_drop_cols"] = temp_drop_cols
+            res_dict["concat_col_name"] = concat_col_name
+            res_dict["use_col_names"] = use_col_names
+            self.error_list.append(res_dict)
 
     def fit_const_cols(self, df: pd.DataFrame) -> list[str]:
         """ Delete columns with constant values.
@@ -215,6 +209,7 @@ class IterativeFeatureSelector:
             A constant column is one where all values are the same.
             Calculate accuracy after removing constant columns.
         """
+        const_type = DellType.CONST
         # 不要なものを消す
         ta_df = self.drop_selected_cols(df=df)
         # 一定のものを抽出
@@ -224,96 +219,12 @@ class IterativeFeatureSelector:
             # 全部Noneだと0になる
             if ta_df[c].nunique() <= 1:
                 const_cols.append(c)
-        self.const_cols = const_cols
-
+        self.selected_dropcols[const_type] = const_cols
         # constを抜いて一回計算する
-        print("const_cols:", const_cols)
-        ta_df = self.drop_selected_cols(df=df, is_drop_const_cols=True)
-        ys = df[self.ycol]
-        res_dict = self.calc_error_importance(ta_df, ys)
-        self._update_min_error_item(res_dict=res_dict)
-        # self.selected_item = copy.deepcopy(res_dict)
+        ta_df = self.drop_selected_cols(df=df, is_use_delltypes=[])
+        self._update_error_list(delltype=const_type, df=df, ta_df=ta_df, temp_drop_cols=const_cols,th=None)
+        return self.selected_dropcols[const_type]
 
-        return self.const_cols
-
-    def _update_error_list(
-            self,
-            df: pd.DataFrame,
-            ta_df: pd.DataFrame,
-            temp_drop_cols: list[str],
-            error_dict_list: list[dict]|None,
-            th: float,
-            verbose: bool = False) -> list[dict]:
-        """ エラーリストを更新する
-        Args:
-            df (pd.DataFrame): オリジナルのデータフレーム
-            ta_df (pd.DataFrame): すでに不要なことが決定している特徴量を除外した後のデータフレーム
-            temp_drop_cols (list[str]): 今回削除する列名
-            error_dict_list (list[dict]|None): エラーのリスト
-            th (float): 登録するしきい値
-            verbose (bool): デバッグ情報を表示するかどうか
-        Returns:
-            list[dict]: 更新後のエラーリスト
-        """
-        if error_dict_list is None:
-            error_dict_list = []
-        # 今回の不要な列を消す
-        xdf = ta_df.drop(columns=temp_drop_cols)
-
-        # 予測対象の列
-        ys = df[self.ycol]
-
-        # 列が少なすぎる場合は終了
-        if xdf.shape[1] < self.min_col_size:
-            if verbose:
-                print("xdf.shape:", xdf.shape, "too small columns size")
-            return error_dict_list
-
-        # 今回使う列名の一覧
-        concat_col_name = "__".join(xdf.columns.tolist())
-        # scoreを計算するべきかどうか？
-        is_calc = True
-        # もう何回か計算している　かつ
-        if len(error_dict_list) != 0:
-            # 今回の列名がすでにある　なら計算しない
-            if concat_col_name in [item["concat_col_name"] for item in error_dict_list]:
-                if verbose:
-                    print("this concat_col_name is already calculated")
-                is_calc = False
-
-        if is_calc:
-            # まだないので計算する
-            res_dict = self.calc_error_importance(xdf, ys)
-            if verbose:
-                print(f"calculated error:{res_dict}")
-        else:
-            # すでにあるので、それを使う
-            ex_item = [item for item in error_dict_list if item["concat_col_name"] == concat_col_name][0]
-            res_dict = copy.deepcopy(ex_item)
-
-        # listに登録するかどうか
-        is_regist = True
-        # もう何回か登録している かつ
-        if len(error_dict_list) != 0:
-            # 今回のthがすでにある　なら登録しない
-            if th in [item["th"] for item in error_dict_list]:
-                is_regist = False
-                if verbose:
-                    print("this th is already registered")
-
-        # 登録する
-        if is_regist:
-            use_col_names = xdf.columns.tolist()
-
-            res_dict["th"] = th
-            res_dict["temp_drop_cols"] = temp_drop_cols
-            res_dict["concat_col_name"] = concat_col_name
-            res_dict["use_col_names"] = use_col_names
-            error_dict_list.append(res_dict)
-            # 最小を更新
-            self._update_min_error_item(res_dict=res_dict)
-
-        return error_dict_list
     def calc_error_p(self, min_item, target_item: dict) -> float:
         min_oof_error = min_item["oof_error"]
         min_cv_errors = min_item["cv_errors"]
@@ -325,34 +236,51 @@ class IterativeFeatureSelector:
         diff_from_min_nmd = diff_from_min / min_cv_errors_sd
         return diff_from_min_nmd
 
-    def _errorlist2df(self, error_list: list[dict]) -> tuple[pd.DataFrame, int, float, list[float]]:
+    def _get_orless_delltype(self, delltype: DellType) -> list[DellType]:
+        return [dtp for dtp in DellType if dtp.value <= delltype.value]
+    def _get_lessthan_delltype(self, delltype: DellType) -> list[DellType]:
+        return [dtp for dtp in DellType if dtp.value < delltype.value]
+
+    def _get_before_min_error_item(self, delltype: DellType) -> dict:
+        # delltypeより前の全てのエラーの中で最小のものを取得
+        belo_types = self._get_orless_delltype(delltype=delltype)
+        before_error_list = [item for item in self.error_list if item["delltype"] in belo_types]
+        if len(before_error_list) == 0:
+            return None
+        min_error_item = min(before_error_list, key=lambda x: x["oof_error"])
+        return min_error_item
+
+    def _errorlist2df(self, delltype: DellType) -> pd.DataFrame:
         # エラーリストをDataFrameに変換
-        error_df = pd.DataFrame(error_list)
+        error_df = pd.DataFrame([item for item in self.error_list if item["delltype"] == delltype])
         # エラーリストを閾値でソート
         error_df = error_df.sort_values("th").reset_index(drop=True)
         # 使う列の数を追加
         error_df["use_col_size"] = [len(cols) for cols in error_df["use_col_names"]]
-
+        # delltypeより前の全てのエラーの中で最小のものを取得
+        min_error_item = self._get_before_min_error_item(delltype=delltype)
         # 最小のエラーより各エラーが大きい効果量を計算
         error_ps = []
         for i, row in error_df.iterrows():
-            p = self.calc_error_p(min_item=self.min_error_item, target_item=row)
+            p = self.calc_error_p(min_item=min_error_item, target_item=row)
             error_ps.append(p)
         error_df["error_ps"] = error_ps
         return error_df
 
     def _plot_state(
-            self, error_list: list[dict], each_desc: str,
+            self,
+            delltype: DellType,
+            each_desc: str,
             ROW: int,
             pi: int,
             is_errorp_log:bool= False)->tuple[int, pd.DataFrame]:
         # errorのdfにする
-        error_df = self._errorlist2df(error_list=error_list)
+        error_df = self._errorlist2df(delltype=delltype)
         min_idx = error_df["oof_error"].idxmin()
         min_error_th = error_df["th"].iloc[min_idx]
 
         # 最小のエラー
-        global_min_error = self.min_error_item["oof_error"]
+        global_min_error = self._get_before_min_error_item(delltype=delltype)["oof_error"]
 
         # グラフを描画
         c = plt.get_cmap("tab10")
@@ -404,14 +332,14 @@ class IterativeFeatureSelector:
         return pi, error_df
 
     def _plot_select_core(
-            self, error_list: list[dict],
-            accept_pth_from_min_error: float,
+            self,
+            delltype: DellType,
+            accept_th: float,
             is_errorp_log:bool = False):
 
         # errorのdfにする
-        error_df = self._errorlist2df(error_list=error_list)
+        error_df = self._errorlist2df(delltype=delltype)
         min_idx = error_df["oof_error"].idxmin()
-        min_error_th = error_df["th"].iloc[min_idx]
 
         # グラフを描画
         ROW = 1
@@ -432,13 +360,13 @@ class IterativeFeatureSelector:
                 label = hlabel if hi == 0 else None
                 plt.axhline(h, color=(0, 0, 0, 0.1), linestyle="solid", label=label)
             plt.yscale("log")
-        ta_df = error_df[error_df["error_ps"] <= accept_pth_from_min_error]
+        ta_df = error_df[error_df["error_ps"] <= accept_th]
         min_colsize_idx = None
         if ta_df.shape[0] > 0:
             min_colsize_idx = ta_df.index[np.argmin(ta_df["use_col_size"].values)]
         plt.plot(error_df["use_col_size"], use_error_ps, marker="x")
         plt.axvline(error_df["use_col_size"].values[min_idx], color="red", linestyle="--", label="minimum error")
-        plt.axhline(accept_pth_from_min_error, color="green", linestyle="dashed", label="accept pth from min error")
+        plt.axhline(accept_th, color="green", linestyle="dashed", label="accept pth from min error")
         if min_colsize_idx is not None:
             plt.axvline(error_df["use_col_size"].values[min_colsize_idx], color="green", linestyle="dotted", label="acceptable minimum column size")
         plt.xlabel("column size")
@@ -451,7 +379,7 @@ class IterativeFeatureSelector:
         if min_colsize_idx is not None:
             drop_cols = error_df["temp_drop_cols"].values[min_colsize_idx]
             # 選ばれたものを保存
-            self.selected_item = copy.deepcopy(ta_df.loc[min_colsize_idx, :].to_dict())
+            self.selected_error = copy.deepcopy(ta_df.loc[min_colsize_idx, :].to_dict())
         return drop_cols, error_df, fig
 
     def create_cor_df(self, df: pd.DataFrame):
@@ -460,7 +388,9 @@ class IterativeFeatureSelector:
             df (pd.DataFrame): DataFrame
         """
         # 不要なものを消す
-        ta_df = self.drop_selected_cols(df=df,is_drop_const_cols=True)
+        lessthan_delltypes = self._get_lessthan_delltype(delltype=DellType.CORR)
+        ta_df = self.drop_selected_cols(df=df,is_use_delltypes=lessthan_delltypes)
+
         # 相関行列がまだないなら作成
         self.cor_df = correlation._create_full_corr_df(df=ta_df)
 
@@ -478,42 +408,52 @@ class IterativeFeatureSelector:
         cor_col_df = cor_col_df.sort_values("cor", ascending=False).reset_index(drop=True)
         return cor_col_df
 
-    def fit_corr_cols(
-            self, df: pd.DataFrame,
-            cor_th: float,
+    def calc_error_each_threshold(
+            self,
+            df: pd.DataFrame,
+            delltype: DellType,
+            th: float,
             verbose: bool = False):
         """ Delete columns with high correlation for each threshold and calculate error
         Args:
             df (pd.DataFrame): DataFrame
-            cor_th (float): Correlation threshold. Columns with correlation higher than this value will be deleted
+            delltype (DellType): Type of deletion
+            th (float): Threshold
             verbose (bool): Whether to display debug information
         """
 
         # 不要なものを消す
-        ta_df = self.drop_selected_cols(
-            df=df,
-            is_drop_const_cols=True)
+        # delltype未満のものを取得して削除
+        lessthan_delltypes = self._get_lessthan_delltype(delltype=delltype)
+        ta_df = self.drop_selected_cols(df=df,is_use_delltypes=lessthan_delltypes)
+
         if verbose:
             print("ta_df.shape:", ta_df.shape)
-
-        # 相関がcor_thより高く、削除すべき列名を取得
-        cor_cols, detail_df = correlation._get_corr_column_for_drop(df_corr=self.cor_df, threshold=cor_th)
+        if delltype == DellType.CORR:
+            # 相関がcor_thより高く、削除すべき列名を取得
+            temp_drop_cops, detail_df = correlation._get_corr_column_for_drop(df_corr=self.cor_df, threshold=th)
+        elif delltype == DellType.NULL:
+            # null importanceのrate
+            temp_drop_cops = self.null_importance_p_df[self.null_importance_p_df["p_value"]<=th]["cols"].values.tolist()
+        elif delltype == DellType.FEATURE_IMPORTANCE:
+            # 落とす列を決定
+            temp_drop_cops = self.feature_importance_p_df[th > self.feature_importance_p_df["mean_importance_p"]]["cols"].values.tolist()
 
         if verbose:
-            print("cor_th:", cor_th)
-            print("cor_cols:", cor_cols)
+            print("th:", th)
+            print("temp_drop_cops:", temp_drop_cops)
 
         # エラーリストを更新
         self.cor_error_list = self._update_error_list(
+            delltype=delltype,
             df=df,
             ta_df=ta_df,
-            temp_drop_cols=cor_cols,
-            error_dict_list=self.cor_error_list,
-            th=cor_th,
+            temp_drop_cols=temp_drop_cops,
+            th=th,
             verbose=verbose)
 
 
-    def plot_cor_state(self, is_errorp_log: bool=True)->tuple[plt.Figure, pd.DataFrame]:
+    def plot_state(self, delltype: DellType, is_errorp_log: bool=True)->tuple[plt.Figure, pd.DataFrame]:
         """ Plot the state of correlation
         Args:
             is_errorp_log (bool): Whether to use a log scale for the error rate. Default: True
@@ -521,39 +461,71 @@ class IterativeFeatureSelector:
             plt.Figure: Figure
             pd.DataFrame: Error DataFrame
         """
-        # 相関の値の様子
         fig = plt.figure(figsize=(5, 8))
         plt.subplots_adjust(hspace=1.0)
         ROW = 1 + 3
         pi = 1
-
         plt.subplot(ROW, 1, pi)
-        plt.title("colleration value")
-        cor_vals = self.cor_df.values
-        cors = []
-        for rw in range(1, cor_vals.shape[0]):
-            for cl in range(rw + 1, cor_vals.shape[1]):
-                cors.append(cor_vals[rw, cl])
-        cors = np.sort(cors)
-        plt.scatter(np.arange(len(cors)), cors, marker = "x", color=(0, 0, 1, 0.1))
-        for ei, ed in enumerate(self.cor_error_list):
-            label = "tryed th " if ei == 0 else None
-            plt.axhline(ed["th"], color=(0, 0, 0, 0.1), label=label)
-            plt.axhline(-ed["th"], color=(0, 0, 0, 0.1))
-        plt.ylabel("correlation")
-        plt.ylim(-1.1, 1.1)
+
+        same_error_list = [item for item in self.error_list if item["delltype"] == delltype]
+
+        if delltype == DellType.CORR:
+            each_desc = "th(delete th<=corr columns)"
+            plt.title("colleration value")
+            cor_vals = self.cor_df.values
+            cors = []
+            for rw in range(1, cor_vals.shape[0]):
+                for cl in range(rw + 1, cor_vals.shape[1]):
+                    cors.append(cor_vals[rw, cl])
+            cors = np.sort(cors)
+            plt.scatter(np.arange(len(cors)), cors, marker = "x", color=(0, 0, 1, 0.1))
+            for ei, ed in enumerate(same_error_list):
+                label = "tryed th " if ei == 0 else None
+                plt.axhline(ed["th"], color=(0, 0, 0, 0.1), label=label)
+                plt.axhline(-ed["th"], color=(0, 0, 0, 0.1))
+            plt.ylabel("correlation")
+            plt.ylim(-1.1, 1.1)
+
+        elif delltype == DellType.NULL:
+            # nullの値の様子
+            each_desc="th(delete null importance<th columns)"
+            plt.title("null importance rate\n(null importandce < importance)")
+            vals = self.null_importance_p_df["p_value"].values
+            vals = np.sort(vals)
+            plt.bar(self.null_importance_p_df["cols"].values, self.null_importance_p_df["p_value"].values, color=(0, 0, 1, 0.3))
+            for ei, ed in enumerate(same_error_list):
+                label = "th tryed" if ei == 0 else None
+                plt.axhline(ed["th"], color=(0, 0, 0, 0.1), label=label)
+            plt.ylabel("null importance")
+            plt.ylim(-0.1, 1.1)
+            plt.xticks(rotation=70)
+
+        elif delltype == DellType.FEATURE_IMPORTANCE:
+            # importanceの様子を描画
+            each_desc="th(delete th > feature importance columns)"
+            plt.title("feature importance\n(delte th>feature importance)")
+            plt.bar(
+                self.feature_importance_p_df["cols"].values,
+                self.feature_importance_p_df["mean_importance_p"].values,
+                color=(0, 0, 1, 0.3))
+            for ei, ed in enumerate(same_error_list):
+                label = "tryed th" if ei == 0 else None
+                plt.axhline(ed["th"], color=(0, 0, 0, 0.1), label=label)
+            plt.ylabel("mean_importance_p")
+            plt.xticks(rotation=90)
+
         plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
         pi += 1
-
         pi, error_df = self._plot_state(
-            error_list=self.cor_error_list,
-            each_desc="th(delete th<=corr columns)",
+            delltype=delltype,
+            each_desc=each_desc,
             ROW=ROW, pi=pi, is_errorp_log=is_errorp_log)
         return fig, error_df
         
-    def plot_select_cors(
+    def plot_select(
             self,
-            accept_pth_from_min_error: float,
+            delltype: DellType,
+            accept_th: float,
             is_errorp_log: bool = True)->tuple[pd.DataFrame, plt.Figure]:
 
         """ Delete columns with high correlation
@@ -562,23 +534,24 @@ class IterativeFeatureSelector:
         Calculate how much worse each th errors is compared to min errors using Cohen's d.
 
         Args:
-            accept_pth_from_min_error (float): Acceptable threshold from the minimum error.
+            delltype (DellType): Type of deletion
+            accept_th (float): Threshold
             is_errorp_log (bool): Whether to log the error probability. Default: True
         Returns:
             pd.DataFrame: DataFrame of errors
             plt.Figure: Figure of the plot
         """
         # エラーの閾値を保存
-        self.cor_accept_pth_from_min_error = accept_pth_from_min_error
+        self.accept_ths[delltype] = accept_th
 
         # 詳細を描画
         drop_cols, error_df, fig = self._plot_select_core(
-            error_list=self.cor_error_list,
-            accept_pth_from_min_error=accept_pth_from_min_error,
+            delltype=delltype,
+            accept_th=accept_th,
             is_errorp_log=is_errorp_log)
 
         # 落とす列を決定
-        self.drop_cor_cols = drop_cols
+        self.selected_dropcols[delltype] = drop_cols
 
         return error_df, fig
 
@@ -621,10 +594,8 @@ class IterativeFeatureSelector:
         """
         
         # 不要なものを消す
-        ta_df = self.drop_selected_cols(
-            df=df,
-            is_drop_const_cols=True,
-            is_drop_cor_cols=True)
+        lessthan_delltypes = self._get_lessthan_delltype(delltype=DellType.NULL)
+        ta_df = self.drop_selected_cols(df=df,is_use_delltypes=lessthan_delltypes)
 
         xdf = ta_df
         ys = df[self.ycol]
@@ -633,7 +604,6 @@ class IterativeFeatureSelector:
         res = self.calc_error_importance(xdf=xdf, ys=ys)
         importance_df = res["importance_df"]
         importance_df = self._normalize_importance_df(importance_df)
-        self._update_min_error_item(res_dict=res)
         # null importanceを計算
         def myshuffle(vals: np.ndarray)->np.ndarray:
             vals = [v for v in vals]
@@ -668,117 +638,19 @@ class IterativeFeatureSelector:
         null_importance_p_df = null_importance_p_df.sort_values("p_value").reset_index(drop=True)
         self.null_importance_p_df = null_importance_p_df
 
-    def fit_null_cols(
-            self, df: pd.DataFrame,
-            null_p_th: float,
-            verbose: bool = False):
-        """ Calculate errors for each threshold and update the error list
-        Args:
-            df (pd.DataFrame): DataFrame
-            null_p_th (float): Threshold for null importance p-value. Columns with p-value smaller than this value will be deleted
-            verbose (bool): Whether to display debug information
-        """
-        # 不要なものを消す
-        ta_df = self.drop_selected_cols(
-            df=df,
-            is_drop_const_cols=True,
-            is_drop_cor_cols=True)
-        if verbose:
-            print("ta_df.shape:", ta_df.shape)
-
-        # 落とす列を決定
-        null_cols = self.null_importance_p_df[self.null_importance_p_df["p_value"]<=null_p_th]["cols"].values.tolist()
-        
-        # エラーリストを更新
-        self.null_error_list = self._update_error_list(
-            df=df,
-            ta_df=ta_df,
-            temp_drop_cols=null_cols,
-            error_dict_list=self.null_error_list,
-            th=null_p_th,
-            verbose=verbose)
-
-
-    def plot_null_state(self,is_errorp_log: bool = True)->tuple[plt.Figure, pd.DataFrame]:
-        """ Plot the state of null importance
-        Args:
-            is_errorp_log (bool): Whether to use a log scale for the error rate. Default: True
-        Returns:
-            plt.Figure: Figure
-            pd.DataFrame: Error DataFrame
-        """
-        # nullの値の様子
-        fig = plt.figure(figsize=(5, 8))
-        plt.subplots_adjust(hspace=1.0)
-        ROW = 1 + 3
-        pi = 1
-
-        plt.subplot(ROW, 1, pi)
-        plt.title("null importance rate\n(null importandce < importance)")
-        vals = self.null_importance_p_df["p_value"].values
-        vals = np.sort(vals)
-        plt.bar(self.null_importance_p_df["cols"].values, self.null_importance_p_df["p_value"].values, color=(0, 0, 1, 0.3))
-        for ei, ed in enumerate(self.null_error_list):
-            label = "th tryed" if ei == 0 else None
-            plt.axhline(ed["th"], color=(0, 0, 0, 0.1), label=label)
-        plt.ylabel("null importance")
-        plt.ylim(-0.1, 1.1)
-        plt.xticks(rotation=70)
-        plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
-        pi += 1
-
-        pi, error_df = self._plot_state(
-            error_list=self.null_error_list,
-            each_desc="th(delete null importance<th columns)",
-            ROW=ROW, pi=pi, is_errorp_log=is_errorp_log)
-
-        return fig, error_df
-
-    def plot_select_nulls(
-            self,
-            accept_pth_from_min_error,
-            is_errorp_log: bool = True)->pd.DataFrame:
-        """ Delete columns with noisy columns.
-        The minimum error group is defined as min errors.
-        The error group for each threshold is defined as th errors.
-        Calculate how much worse each th errors is compared to min errors using Cohen's d.
-
-        Args:
-            accept_pth_from_min_error (float): Acceptable threshold from the minimum error.
-            is_errorp_log (bool): Whether to log the error probability. Default: True
-        Returns:
-            pd.DataFrame: DataFrame of errors
-            plt.Figure: Figure of the plot
-        """
-        # 閾値を保存
-        self.null_accept_pth_from_min_error = accept_pth_from_min_error
-
-        # 詳細を描画
-        drop_cols, error_df, fig = self._plot_select_core(
-            error_list=self.null_error_list,
-            accept_pth_from_min_error=accept_pth_from_min_error,
-            is_errorp_log=is_errorp_log)
-
-        # 落とす列を決定
-        self.drop_null_cols = drop_cols
-        return error_df, fig
-
     def create_feature_importance_df(self, df: pd.DataFrame):
         """ Create a feature importance DataFrame
         Args:
             df (pd.DataFrame): DataFrame
         """
         # 不要なものを消す
-        ta_df = self.drop_selected_cols(
-            df=df,
-            is_drop_const_cols=True,
-            is_drop_cor_cols=True,
-            is_drop_null_cols=True)
+        # 不要なものを消す
+        lessthan_delltypes = self._get_lessthan_delltype(delltype=DellType.FEATURE_IMPORTANCE)
+        ta_df = self.drop_selected_cols(df=df,is_use_delltypes=lessthan_delltypes)
         xdf = ta_df
         ys = df[self.ycol]
         # importacneを出す
         res_dict = self.calc_error_importance(xdf=xdf, ys=ys)
-        self._update_min_error_item(res_dict=res_dict)
         importance_df = res_dict["importance_df"]
         mean_importances = np.mean(importance_df.values, axis=1)
         mean_importance_df = pd.DataFrame()
@@ -791,95 +663,10 @@ class IterativeFeatureSelector:
         mean_importance_df["mean_importance_p"] = mean_importance_df["mean_importance"] / mean_importance_df["mean_importance"].max()
         self.feature_importance_p_df = mean_importance_df.reset_index(drop=True)
 
-    def fit_feature_importance_cols(
-            self, df: pd.DataFrame,
-            importance_p_th: float,
-            verbose: bool = False):
-        """ Calculate errors for each threshold and update the error list
-        Args:
-            df (pd.DataFrame): DataFrame
-            importance_p_th (float): Threshold for feature importance. Columns with importance lower than this value will be deleted
-            verbose (bool): Whether to display debug information
-        """
-        # 不要なものを消す
-        ta_df = self.drop_selected_cols(
-            df=df,
-            is_drop_const_cols=True,
-            is_drop_cor_cols=True,
-            is_drop_null_cols=True)
-        if verbose:
-            print("ta_df.shape:", ta_df.shape)
 
-        # 落とす列を決定
-        not_important_cols = self.feature_importance_p_df[importance_p_th > self.feature_importance_p_df["mean_importance_p"]]["cols"].values.tolist()
 
-        # エラーリストを更新
-        self.fearute_importance_error_list = self._update_error_list(
-            df=df,
-            ta_df=ta_df,
-            temp_drop_cols=not_important_cols,
-            error_dict_list=self.fearute_importance_error_list,
-            th=importance_p_th,
-            verbose=verbose)
-    def plot_feature_importance_state(self, is_errorp_log: bool = True)->tuple[plt.Figure, pd.DataFrame]:
-        """ Plot the state of feature importance
-        Args:
-            is_errorp_log (bool): Whether to use a log scale for the error rate. Default: True
-        Returns:
-            plt.Figure: Figure
-            pd.DataFrame: Error DataFrame
-        """
-        # importanceの様子を描画
-        fig = plt.figure(figsize=(5, 8))
-        plt.subplots_adjust(hspace=1.0)
-        ROW = 1 + 3
-        pi = 1
+# %%
 
-        plt.subplot(ROW, 1, pi)
-        plt.title("feature importance\n(delte th>feature importance)")
-        plt.bar(
-            self.feature_importance_p_df["cols"].values,
-            self.feature_importance_p_df["mean_importance_p"].values,
-            color=(0, 0, 1, 0.3))
-        for ei, ed in enumerate(self.fearute_importance_error_list):
-            label = "試したth" if ei == 0 else None
-            plt.axhline(ed["th"], color=(0, 0, 0, 0.1), label=label)
-        plt.ylabel("mean_importance_p")
-        plt.xticks(rotation=90)
-        plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
-        pi += 1
-
-        # 詳細を描画
-        pi, error_df = self._plot_state(
-            error_list=self.fearute_importance_error_list,
-            each_desc="th(delete th > feature importance columns)",
-            ROW=ROW, pi=pi, is_errorp_log=is_errorp_log)
-        return fig, error_df
-
-    def plot_select_feature_importance(
-            self, accept_pth_from_min_error, is_errorp_log: bool=True)->tuple[pd.DataFrame, plt.Figure]:
-        """ Delete columns with low important columns.
-        The minimum error group is defined as min errors.
-        The error group for each threshold is defined as th errors.
-        Calculate how much worse each th errors is compared to min errors using Cohen's d.
-
-        Args:
-            accept_pth_from_min_error (float): Acceptable threshold from the minimum error.
-            is_errorp_log (bool): Whether to log the error probability. Default: True
-        Returns:
-            pd.DataFrame: DataFrame of errors
-            plt.Figure: Figure of the plot
-        """
-        # 閾値を保存
-        self.fearute_importance_accept_pth_from_min_error = accept_pth_from_min_error
-
-        # 詳細を描画
-        drop_cols, error_df, fig = self._plot_select_core(
-            error_list=self.fearute_importance_error_list,
-            accept_pth_from_min_error=accept_pth_from_min_error,
-            is_errorp_log=is_errorp_log)
-        self.drop_feature_importance_cols = drop_cols
-        return error_df, fig
-
+# %%
 
 # %%
