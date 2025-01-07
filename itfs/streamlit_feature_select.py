@@ -66,15 +66,19 @@ def write_remainer_cols(
             src_df (pd.DataFrame): source dataframe
         """
         if drop_cols is not None:
-            st.write(f"dropped columns({len(drop_cols)}): {', '.join(drop_cols)}")
+            with st.expander(f"dropped columns(click open) size={len(drop_cols)}"):
+                for item in drop_cols:
+                    st.write(item)
         orless_dell_types = fs._get_orless_delltype(delltype=dell_type)
         remaind_cols = fs.drop_selected_cols(df=src_df, is_drop_ycol=orless_dell_types).columns
-        st.write(f"remaining columns({len(remaind_cols)}): {', '.join(remaind_cols)}")
+        with st.expander(f"remaining columns(click open) size={len(remaind_cols)}"):
+            for item in remaind_cols:
+                st.write(item)
 
 # %%
 def start_server(
         src_df: pd.DataFrame,
-        fs_path: str,
+        temp_dir_path: str,
         ycol: str,
         calc_error_importance: Callable[[pd.DataFrame, np.ndarray], dict[str, any]],
         force_drop_cols: list[str] = [],
@@ -83,7 +87,7 @@ def start_server(
     """ start streamlit server
     Args:
         src_df (pd.DataFrame): source dataframe
-        fs_path (str): path to save instance
+        temp_dir_path (str): path to save directory.
         ycol (str): target column
         calc_error_importance (Callable[[pd.DataFrame, np.ndarray], dict[str, any]]): Function to calculate score and importance.
             see also IterativeFeatureSelector's init docstring.
@@ -91,6 +95,8 @@ def start_server(
         ignore_cols (list[str], optional): columns to ignore. Defaults to [].
         min_col_size (int, optional): minimum column size. Defaults to 2.
     """
+
+    fs_path = os.path.join(temp_dir_path, "fs.pkl")
 
     # create session state instance
     ps = PageSessionState(__file__)
@@ -124,6 +130,7 @@ def start_server(
 
     # initialize
     if not ps.init:
+        os.makedirs(temp_dir_path, exist_ok=True)
         if not os.path.exists(fs_path):
             # create instance
             fs = IterativeFeatureSelector(
@@ -152,32 +159,39 @@ def start_server(
             default_range_start,
             default_range_end,
             default_each_calc_size)
+        # calculate error with corr each thresould
+        stete_fig_path = os.path.join(temp_dir_path, f"{base_name}_state.png")
         if st.button(f"calculate error with {base_name} each thresould"):
             def core_error_func(th: float):
+                # calculate error
                 fs.calc_error_each_threshold(
                     df=src_df,
                     delltype=delltype, th=th, verbose=VERBOSE)
+                # save state
                 save_ifs(fs)
+                # save state plot
+                fig, error_df = fs.plot_state(delltype=delltype)
+                fig.savefig(stete_fig_path, bbox_inches='tight')
             progress_bar(th_ranges, core_error_func)
         # show state
-        delltype_error_list = [item for item in fs.error_list if item["delltype"] == delltype]
-        if len(delltype_error_list) != 0:
-            # Plot correlation trends
-            fig, error_df = fs.plot_state(delltype=delltype)
-            st.pyplot(fig)
+        if os.path.exists(stete_fig_path):
+            st.image(stete_fig_path)
     
         # Determine columns to drop
+        selectcol_fig_path = os.path.join(temp_dir_path, f"{base_name}_select.png")
         def drop_cols(th: float):
             cor_error_df, fig = fs.plot_select(delltype=delltype, accept_th=th)
-            st.pyplot(fig)
-            write_remainer_cols(fs=fs, src_df=src_df, dell_type=delltype, drop_cols=fs.selected_dropcols[delltype])
             save_ifs(fs)
+            fig.savefig(selectcol_fig_path, bbox_inches='tight')
+
         delltype_accept_th =  fs.accept_ths[delltype]
         accept_th = float_text_input(f"{base_name} accept th", delltype_accept_th)
         if st.button(f"drop {base_name} columns"):
             drop_cols(accept_th)
-        elif delltype_accept_th is not None:
-            drop_cols(delltype_accept_th)
+
+        if os.path.exists(selectcol_fig_path):
+            write_remainer_cols(fs=fs, src_df=src_df, dell_type=delltype, drop_cols=fs.selected_dropcols[delltype])
+            st.image(selectcol_fig_path)
 
     ############################
     # constant columns
@@ -195,19 +209,22 @@ def start_server(
     ############################
     st.write("---")
     st.header("correration")
-    def show_heat_map():
+    corr_img_path = os.path.join(temp_dir_path, "correration_matrix.png")
+    def save_heat_map():
         fig = plt.figure(figsize=(10, 5))
         sns.heatmap(fs.cor_df, annot=True, fmt=".2f", cmap="coolwarm")
-        st.pyplot(fig)
-    if fs.cor_df is None:
+        fig.savefig(corr_img_path, bbox_inches='tight')
+
+    if not os.path.exists(corr_img_path):
         if st.button("create correration matrix"):
             st.write("calculatingcorreration matrix...")
             fs.create_cor_df(df=src_df)
             save_ifs(fs)
             st.write("done.")
-            show_heat_map()
-    else:
-        show_heat_map()
+            save_heat_map()
+    if os.path.exists(corr_img_path):
+        st.image(corr_img_path)
+
     fit_select(
         base_name="correration",
         delltype=DellType.CORR,
@@ -219,17 +236,22 @@ def start_server(
     ############################
     # null importance columns
     ############################
+    null_importance_p_img_path = os.path.join(temp_dir_path, "null_importance_p.png")
     st.write("---")
     st.header("null importance")
     null_calc_times = float_text_input("null_calc_times", 3)
-    if st.button("create null importance"):
-        fs.create_null_df(df=src_df, null_times=int(null_calc_times))
-        save_ifs(fs)
-    if fs.null_importance_p_df is not None:
-        fig = plt.figure(figsize=(5, 2))
-        plt.bar(fs.null_importance_p_df["cols"], fs.null_importance_p_df["p_value"])
-        plt.xticks(rotation=90)
-        st.pyplot(fig)
+    if not os.path.exists(null_importance_p_img_path):
+        if st.button("create null importance"):
+            fs.create_null_df(df=src_df, null_times=int(null_calc_times))
+            save_ifs(fs)
+            fig = plt.figure(figsize=(5, 2))
+            plt.bar(fs.null_importance_p_df["cols"], fs.null_importance_p_df["p_value"])
+            plt.xticks(rotation=90)
+            fig.savefig(null_importance_p_img_path, bbox_inches='tight')
+    
+    if os.path.exists(null_importance_p_img_path):
+        st.image(null_importance_p_img_path)
+
     fit_select(
         base_name="null importance",
         delltype=DellType.NULL,
@@ -240,17 +262,22 @@ def start_server(
     ############################
     # feature importance columns
     ############################
+    feature_importance_p_img_path = os.path.join(temp_dir_path, "feature_importance_p.png")
     st.write("---")
     st.header("feature importance")
-    if st.button("create feature importance"):
-        # Calculate feature importance
-        fs.create_feature_importance_df(df=src_df)
-        save_ifs(fs)
-    if fs.feature_importance_p_df is not None:
-        fig = plt.figure(figsize=(5, 2))
-        plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
-        plt.xticks(rotation=90)
-        st.pyplot(fig)
+    if not os.path.exists(feature_importance_p_img_path):
+        if st.button("create feature importance"):
+            # Calculate feature importance
+            fs.create_feature_importance_df(df=src_df)
+            save_ifs(fs)
+            fig = plt.figure(figsize=(5, 2))
+            plt.bar(fs.feature_importance_p_df["cols"], fs.feature_importance_p_df["mean_importance_p"])
+            plt.xticks(rotation=90)
+            fig.savefig(feature_importance_p_img_path, bbox_inches='tight')
+            st.image(feature_importance_p_img_path)
+
+    if os.path.exists(feature_importance_p_img_path):
+        st.image(feature_importance_p_img_path)
     fit_select(
         base_name="feature importance",
         delltype=DellType.FEATURE_IMPORTANCE,
@@ -258,3 +285,4 @@ def start_server(
         default_range_end=0.5,
         default_each_calc_size=10)
     return fs
+# %%

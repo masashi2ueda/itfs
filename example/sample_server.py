@@ -111,13 +111,11 @@ def create_df_dummy()->pd.DataFrame:
 # Load dataset
 ############################################
 # Choose one and comment out the other
-
-# # Dummy data
-# src_df = pd.read_pickle(open("dummy_df.pkl", "rb"))
-
-# Housing price data
-src_df = pd.read_pickle(open("house_df.pkl", "rb"))
-
+data_name = "house"
+if data_name == "dummy":
+    src_df = create_df_dummy()
+elif data_name == "house":
+    src_df = create_df_housing()
 
 # %%
 ####################
@@ -200,7 +198,7 @@ def print_cols(label, drop_cols):
 ####################
 fs = start_server(
     src_df=src_df,
-    fs_path="./fs.pkl",
+    temp_dir_path=f"./{data_name}_fs",
     ycol="target",
     calc_error_importance=calc_error_importance
 )

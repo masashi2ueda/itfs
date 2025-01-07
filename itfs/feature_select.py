@@ -114,7 +114,7 @@ class IterativeFeatureSelector:
         for item, name in zip(error_items, names):
             if item is not None:
                 temp_dict = {}
-                temp_dict["oof_error"] = item["oof_error"]
+                temp_dict["oof_error"] = float(item["oof_error"])
                 temp_dict["cv_errors"] = tofloatlist(item["cv_errors"])
                 temp_dict["use_cols"] = tostrlist(item["use_col_names"])
                 dst_dict[name] = temp_dict
@@ -389,7 +389,7 @@ class IterativeFeatureSelector:
 
         # グラフを描画
         ROW = 1
-        fig = plt.figure(figsize=(5, ROW * 3))
+        fig = plt.figure(figsize=(7, ROW * 3))
         c = plt.get_cmap("tab10")
         plt.subplots_adjust(hspace=1.0)
 
@@ -508,7 +508,7 @@ class IterativeFeatureSelector:
             plt.Figure: Figure
             pd.DataFrame: Error DataFrame
         """
-        fig = plt.figure(figsize=(5, 8))
+        fig = plt.figure(figsize=(7, 8))
         plt.subplots_adjust(hspace=1.0)
         ROW = 1 + 3
         pi = 1
